@@ -71,11 +71,13 @@ func run(argv []string) int {
 	case a.mode == "new" && a.alias != "":
 		return runNewAlias(a.alias, runCmd, loginCmd, a.passthrough, cfg, st)
 	case a.mode == "new" && a.alias == "":
-		return runAutoPick(runCmd, a.passthrough, cfg, st)
+		return runAutoPick(runCmd, a.passthrough, cfg, st, cfg.Sessions.PickBehavior)
+	case a.mode == "rr":
+		return runAutoPick(runCmd, a.passthrough, cfg, st, "round_robin")
 	case a.mode == "last":
 		return runLast(runCmd, a.passthrough, cfg, st)
 	case a.mode == "root":
-		return runAutoPick(runCmd, a.passthrough, cfg, st)
+		return runAutoPick(runCmd, a.passthrough, cfg, st, "round_robin")
 	default:
 		eprintln("invalid mode")
 		return exitUsage
@@ -145,7 +147,7 @@ func runNewAlias(alias, runCmd, loginCmd string, passthrough []string, cfg confi
 	return code
 }
 
-func runAutoPick(runCmd string, passthrough []string, cfg config.Config, st *state.Store) int {
+func runAutoPick(runCmd string, passthrough []string, cfg config.Config, st *state.Store, pickBehavior string) int {
 	unlock, err := st.Lock()
 	if err != nil {
 		eprintln(err.Error())
@@ -170,10 +172,11 @@ func runAutoPick(runCmd string, passthrough []string, cfg config.Config, st *sta
 		eprintln(err.Error())
 		return exitGeneric
 	}
-	winner := aliases[0]
-	if len(aliases) > 0 {
-		winner = aliases[g.RoundRobinIndex%len(aliases)]
-		g.RoundRobinIndex = (g.RoundRobinIndex + 1) % len(aliases)
+	winner, err := pickAlias(aliases, &g, pickBehavior)
+	if err != nil {
+		unlock()
+		eprintln(err.Error())
+		return exitNoSessions
 	}
 	g.LastAlias = winner
 	if err := config.EnsureDefaultConfigFile(st.ConfigPath, cfg); err != nil {
@@ -199,6 +202,27 @@ func runAutoPick(runCmd string, passthrough []string, cfg config.Config, st *sta
 		return exitGeneric
 	}
 	return code
+}
+
+func pickAlias(aliases []string, g *state.GlobalState, pickBehavior string) (string, error) {
+	switch pickBehavior {
+	case "last":
+		if g.LastAlias == "" {
+			return "", fmt.Errorf("no previous session recorded; run agentlb or agentlb new <alias> first")
+		}
+		for _, a := range aliases {
+			if a == g.LastAlias {
+				return g.LastAlias, nil
+			}
+		}
+		return "", fmt.Errorf("last session no longer exists; run agentlb or agentlb new <alias> first")
+	case "round_robin":
+		fallthrough
+	default:
+		winner := aliases[g.RoundRobinIndex%len(aliases)]
+		g.RoundRobinIndex = (g.RoundRobinIndex + 1) % len(aliases)
+		return winner, nil
+	}
 }
 
 func runLast(runCmd string, passthrough []string, cfg config.Config, st *state.Store) int {
@@ -303,6 +327,13 @@ func parseCLI(args []string) (cliArgs, error) {
 		if t == "new" {
 			if out.mode == "root" {
 				out.mode = "new"
+				continue
+			}
+			return out, fmt.Errorf("invalid usage")
+		}
+		if t == "rr" {
+			if out.mode == "root" {
+				out.mode = "rr"
 				continue
 			}
 			return out, fmt.Errorf("invalid usage")

@@ -19,6 +19,7 @@ type Runner struct {
 type Sessions struct {
 	AliasPattern            string `toml:"alias_pattern"`
 	AssignmentHistoryWindow int    `toml:"assignment_history_window"`
+	PickBehavior            string `toml:"pick_behavior"`
 }
 
 type Config struct {
@@ -36,6 +37,7 @@ func Default() Config {
 		Sessions: Sessions{
 			AliasPattern:            "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
 			AssignmentHistoryWindow: 30,
+			PickBehavior:            "round_robin",
 		},
 	}
 }
@@ -85,6 +87,9 @@ func (c *Config) applyDefaultsAndValidate() {
 	}
 	if c.Sessions.AssignmentHistoryWindow <= 0 {
 		c.Sessions.AssignmentHistoryWindow = d.Sessions.AssignmentHistoryWindow
+	}
+	if c.Sessions.PickBehavior != "round_robin" && c.Sessions.PickBehavior != "last" {
+		c.Sessions.PickBehavior = d.Sessions.PickBehavior
 	}
 }
 
