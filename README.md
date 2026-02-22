@@ -14,6 +14,16 @@ For maximum portability share the whole dir with `syncthing` with multiple machi
 go build ./cmd/agentlb
 ```
 
+## Install
+
+Install directly from GitHub with Go:
+
+```bash
+go install github.com/gngeorgiev/agentlb/cmd/agentlb@latest
+```
+
+Make sure `$GOPATH/bin` (or `$HOME/go/bin`) is on your `PATH`.
+
 ## Quick Start
 
 ```bash
