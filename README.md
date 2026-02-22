@@ -2,7 +2,11 @@
 
 `agentlb` runs Codex with isolated per-alias `CODEX_HOME`.
 
+Others will come.
+
 Each alias has its own directory at `~/.agentlb/sessions/<alias>`, so auth/config/history stay separate.
+
+For maximum portability share the whole dir with `syncthing` with multiple machines. Maybe within your tailscale network idk.
 
 ## Build
 

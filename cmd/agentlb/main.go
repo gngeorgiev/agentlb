@@ -101,20 +101,6 @@ func runNewAlias(alias, runCmd, loginCmd string, passthrough []string, cfg confi
 		eprintln(err.Error())
 		return exitGeneric
 	}
-	unlock()
-
-	if created {
-		if err := session.RunLogin(loginCmd, alias, st); err != nil {
-			eprintln(err.Error())
-			return exitLoginFailed
-		}
-	}
-
-	unlock, err = st.Lock()
-	if err != nil {
-		eprintln(err.Error())
-		return exitGeneric
-	}
 	if err := config.EnsureDefaultConfigFile(st.ConfigPath, cfg); err != nil {
 		unlock()
 		eprintln(err.Error())
@@ -137,8 +123,15 @@ func runNewAlias(alias, runCmd, loginCmd string, passthrough []string, cfg confi
 		eprintln(err.Error())
 		return exitGeneric
 	}
-
 	unlock()
+
+	if created {
+		if err := session.RunLogin(loginCmd, alias, st); err != nil {
+			eprintln(err.Error())
+			return exitLoginFailed
+		}
+	}
+
 	code, err := session.RunCommand(runCmd, passthrough, alias, st)
 	if err != nil {
 		eprintln(err.Error())
