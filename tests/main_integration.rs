@@ -262,12 +262,16 @@ fn status_prints_alias_email_path_and_selection_report() -> Result<(), Box<dyn E
     assert!(stdout.contains("PRIM"));
     assert!(stdout.contains("SCORE"));
     let lines: Vec<&str> = stdout.lines().collect();
-    assert!(lines
-        .iter()
-        .any(|l| l.contains("a@example.com") && l.contains("/.agentlb/sessions/a")));
-    assert!(lines
-        .iter()
-        .any(|l| l.contains(" - ") && l.contains("/.agentlb/sessions/b")));
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("a@example.com") && l.contains("/.agentlb/sessions/a"))
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains(" - ") && l.contains("/.agentlb/sessions/b"))
+    );
     assert!(stdout.contains("selected session: a"));
     Ok(())
 }
@@ -303,6 +307,74 @@ fn new_accepts_email_target_and_resolves_to_alias() -> Result<(), Box<dyn Error>
 
     let ran = fs::read_to_string(&run_log)?;
     assert!(ran.trim().ends_with("/.agentlb/sessions/work"));
+    Ok(())
+}
+
+#[test]
+fn rm_removes_session_and_cleans_state_and_status() -> Result<(), Box<dyn Error>> {
+    let home = TempDir::new()?;
+    let sess = home.path().join(".agentlb/sessions/a");
+    fs::create_dir_all(&sess)?;
+    fs::create_dir_all(home.path().join(".agentlb/state/sessions"))?;
+    fs::write(
+        home.path().join(".agentlb/state/sessions/a.json"),
+        r#"{"alias":"a","created_at":"2026-02-28T00:00:00Z"}"#,
+    )?;
+    fs::create_dir_all(home.path().join(".agentlb/state"))?;
+    fs::write(
+        home.path().join(".agentlb/state/global.json"),
+        r#"{"round_robin_index":0,"last_alias":"a"}"#,
+    )?;
+    fs::write(
+        home.path().join(".agentlb/status.json"),
+        r#"{
+  "version": 1,
+  "updatedAt": "2026-02-28T12:00:00Z",
+  "daemon": {"pid": 1, "startedAt": "2026-02-28T11:55:00Z"},
+  "sessions": {
+    "a": {"health":"healthy","appServer":{"state":"running","pid":1,"restartCount":0},"rateLimits":{"limitId":"codex","primary":null,"secondary":null},"usageLeftPercent":30,"activity":{"activeTurns":0},"lastRateLimitUpdateAt":"2026-02-28T12:00:00Z","lastProbeAt":"","lastProbeResult":"","lastSelectedAt":""},
+    "b": {"health":"healthy","appServer":{"state":"running","pid":2,"restartCount":0},"rateLimits":{"limitId":"codex","primary":null,"secondary":null},"usageLeftPercent":30,"activity":{"activeTurns":0},"lastRateLimitUpdateAt":"2026-02-28T12:00:00Z","lastProbeAt":"","lastProbeResult":"","lastSelectedAt":""}
+  }
+}"#,
+    )?;
+
+    let out = Command::new(env!("CARGO_BIN_EXE_agentlb"))
+        .env("HOME", home.path())
+        .env("AGENTLB_SUPERVISOR_DISABLED", "1")
+        .args(["rm", "a"])
+        .output()?;
+    assert!(out.status.success());
+    assert!(!home.path().join(".agentlb/sessions/a").exists());
+    assert!(!home.path().join(".agentlb/state/sessions/a.json").exists());
+
+    let global = fs::read_to_string(home.path().join(".agentlb/state/global.json"))?;
+    assert!(!global.contains("\"last_alias\""));
+
+    let status = fs::read_to_string(home.path().join(".agentlb/status.json"))?;
+    assert!(!status.contains("\"a\""));
+    assert!(status.contains("\"b\""));
+    Ok(())
+}
+
+#[test]
+fn rm_accepts_email_target() -> Result<(), Box<dyn Error>> {
+    let home = TempDir::new()?;
+    let sess = home.path().join(".agentlb/sessions/work");
+    fs::create_dir_all(&sess)?;
+    let payload = r#"{"email":"remove@example.com"}"#;
+    let token = format!("x.{}.y", URL_SAFE_NO_PAD.encode(payload.as_bytes()));
+    fs::write(
+        sess.join("auth.json"),
+        format!(r#"{{"tokens":{{"id_token":"{}"}}}}"#, token),
+    )?;
+
+    let out = Command::new(env!("CARGO_BIN_EXE_agentlb"))
+        .env("HOME", home.path())
+        .env("AGENTLB_SUPERVISOR_DISABLED", "1")
+        .args(["rm", "remove@example.com"])
+        .output()?;
+    assert!(out.status.success());
+    assert!(!home.path().join(".agentlb/sessions/work").exists());
     Ok(())
 }
 

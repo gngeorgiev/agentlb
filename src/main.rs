@@ -323,8 +323,34 @@ fn run_rm(target: &str, st: &state::Store) -> i32 {
         }
     }
 
+    if std::env::var("AGENTLB_SUPERVISOR_DISABLED").unwrap_or_default() != "1"
+        && let Err(err) = restart_supervisor_for_rm(st)
+    {
+        eprintln!("{}", err);
+        return EXIT_GENERIC;
+    }
+
     println!("removed session: {}", alias);
     EXIT_OK
+}
+
+fn restart_supervisor_for_rm(st: &state::Store) -> io::Result<()> {
+    let before = supervisor::current_state(st);
+    if before.is_running
+        && let Some(pid) = before.pid_in_file
+    {
+        let _ = std::process::Command::new("kill")
+            .arg(pid.to_string())
+            .status();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while std::time::Instant::now() < deadline {
+            if !supervisor::current_state(st).is_running {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    }
+    supervisor::ensure_running(st)
 }
 
 fn run_status(st: &state::Store) -> i32 {

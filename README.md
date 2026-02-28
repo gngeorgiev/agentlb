@@ -89,6 +89,7 @@ At the end, `selected session: ...` shows the final winner (or `<none>` when no 
   - Deletes session directory under `~/.agentlb/sessions/<alias>`.
   - Removes session entry from `~/.agentlb/state/sessions/<alias>.json` and `~/.agentlb/status.json`.
   - Clears `last_alias` if it points to the removed session.
+  - Restarts supervisor afterward to refresh managed process set/state.
 - `agentlb new`
   - Pick best session using `~/.agentlb/status.json` (usage-aware selection).
   - If status is unusable after retry, falls back to existing managed aliases.
