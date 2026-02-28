@@ -214,7 +214,7 @@ fn supervisor_stop_stops_running_supervisor() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
-fn list_prints_alias_email_and_path() -> Result<(), Box<dyn Error>> {
+fn status_prints_alias_email_path_and_selection_report() -> Result<(), Box<dyn Error>> {
     let home = TempDir::new()?;
     let sessions = home.path().join(".agentlb/sessions");
     fs::create_dir_all(sessions.join("a"))?;
@@ -227,23 +227,48 @@ fn list_prints_alias_email_and_path() -> Result<(), Box<dyn Error>> {
         format!(r#"{{"tokens":{{"id_token":"{}"}}}}"#, token),
     )?;
 
+    fs::write(
+        home.path().join(".agentlb/status.json"),
+        r#"{
+  "version": 1,
+  "updatedAt": "2026-02-28T12:00:00Z",
+  "daemon": {"pid": 1, "startedAt": "2026-02-28T11:55:00Z"},
+  "sessions": {
+    "a": {
+      "health": "healthy",
+      "appServer": {"state": "running", "pid": 11, "restartCount": 0},
+      "rateLimits": {"limitId": "codex", "primary": {"usedPercent": 10, "windowDurationMins": 15, "resetsAt": 1730947200}, "secondary": null},
+      "usageLeftPercent": 90,
+      "activity": {"activeTurns": 0},
+      "lastRateLimitUpdateAt": "2099-01-01T00:00:00Z",
+      "lastProbeAt": "",
+      "lastProbeResult": "",
+      "lastSelectedAt": ""
+    }
+  }
+}"#,
+    )?;
+
     let out = Command::new(env!("CARGO_BIN_EXE_agentlb"))
         .env("HOME", home.path())
         .env("AGENTLB_SUPERVISOR_DISABLED", "1")
-        .args(["list"])
+        .args(["status"])
         .output()?;
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("ALIAS"));
     assert!(stdout.contains("EMAIL"));
     assert!(stdout.contains("PATH"));
+    assert!(stdout.contains("PRIM"));
+    assert!(stdout.contains("SCORE"));
     let lines: Vec<&str> = stdout.lines().collect();
-    assert!(lines.iter().any(|l| l.trim_start().starts_with('a')
-        && l.contains("a@example.com")
-        && l.contains("/.agentlb/sessions/a")));
-    assert!(lines.iter().any(|l| l.trim_start().starts_with('b')
-        && l.contains(" - ")
-        && l.contains("/.agentlb/sessions/b")));
+    assert!(lines
+        .iter()
+        .any(|l| l.contains("a@example.com") && l.contains("/.agentlb/sessions/a")));
+    assert!(lines
+        .iter()
+        .any(|l| l.contains(" - ") && l.contains("/.agentlb/sessions/b")));
+    assert!(stdout.contains("selected session: a"));
     Ok(())
 }
 

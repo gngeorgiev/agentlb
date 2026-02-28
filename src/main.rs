@@ -90,8 +90,8 @@ fn run(argv: Vec<String>) -> i32 {
         println!("{}", st.config_path.display());
         return EXIT_OK;
     }
-    if args.mode == "list" {
-        return run_list(&st);
+    if args.mode == "status" {
+        return run_status(&st);
     }
 
     if let Err(err) = supervisor::ensure_running(&st) {
@@ -247,7 +247,7 @@ fn print_supervisor_help() {
 fn print_help() {
     println!("usage:");
     println!("  agentlb [--cmd <command>] [-- <args...>]");
-    println!("  agentlb list");
+    println!("  agentlb status");
     println!(
         "  agentlb new [<alias-or-email>] [--cmd <command>] [--login-cmd <command>] [-- <args...>]"
     );
@@ -260,51 +260,18 @@ fn print_help() {
     println!("  agentlb config init");
 }
 
-fn run_list(st: &state::Store) -> i32 {
-    let aliases = match st.list_aliases() {
-        Ok(v) => v,
-        Err(err) => {
-            eprintln!("{}", err);
-            return EXIT_GENERIC;
+fn run_status(st: &state::Store) -> i32 {
+    let cfg = config::load(&st.config_path).unwrap_or_else(|_| config::default_config());
+    let scoring_cfg = status::ScoringConfig::from(&cfg.sessions);
+    match status::load_status(st) {
+        Ok(sf) => {
+            let selected =
+                status::pick_best_session_with_config(&sf, chrono::Utc::now(), &scoring_cfg);
+            print_unified_status_table(st, &sf, &scoring_cfg, selected.as_deref());
         }
-    };
-
-    let mut rows: Vec<(String, String, String)> = Vec::new();
-    for alias in aliases.iter().filter(|a| !a.starts_with('.')) {
-        let path = st.session_dir(alias);
-        let email = read_session_email(&path).unwrap_or_else(|| "-".to_string());
-        rows.push((alias.clone(), email, path.display().to_string()));
-    }
-
-    let alias_w = rows
-        .iter()
-        .map(|(a, _, _)| a.len())
-        .max()
-        .unwrap_or(5)
-        .max("ALIAS".len());
-    let email_w = rows
-        .iter()
-        .map(|(_, e, _)| e.len())
-        .max()
-        .unwrap_or(5)
-        .max("EMAIL".len());
-
-    println!(
-        "{:<alias_w$}  {:<email_w$}  PATH",
-        "ALIAS",
-        "EMAIL",
-        alias_w = alias_w,
-        email_w = email_w
-    );
-    for (alias, email, path) in rows {
-        println!(
-            "{:<alias_w$}  {:<email_w$}  {}",
-            alias,
-            email,
-            path,
-            alias_w = alias_w,
-            email_w = email_w
-        );
+        Err(err) => {
+            eprintln!("session selection report: unavailable ({})", err);
+        }
     }
     EXIT_OK
 }
@@ -617,6 +584,142 @@ fn print_selection_report(
     }
 }
 
+fn print_unified_status_table(
+    st: &state::Store,
+    status_file: &status::StatusFile,
+    scoring_cfg: &status::ScoringConfig,
+    selected: Option<&str>,
+) {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    let scored = status::score_rows_with_config(status_file, chrono::Utc::now(), scoring_cfg);
+    let mut score_by_alias: BTreeMap<String, status::SessionScoreRow> = BTreeMap::new();
+    for row in scored {
+        score_by_alias.insert(row.alias.clone(), row);
+    }
+
+    let fs_aliases = st.list_aliases().unwrap_or_default();
+    let mut aliases: BTreeSet<String> = BTreeSet::new();
+    for a in fs_aliases.into_iter().filter(|a| !a.starts_with('.')) {
+        aliases.insert(a);
+    }
+    for a in score_by_alias.keys().filter(|a| !a.starts_with('.')) {
+        aliases.insert(a.clone());
+    }
+
+    let mut meta: BTreeMap<String, (String, String)> = BTreeMap::new();
+    for alias in &aliases {
+        let path = st.session_dir(alias);
+        let email = read_session_email(&path).unwrap_or_else(|| "-".to_string());
+        meta.insert(alias.clone(), (email, path.display().to_string()));
+    }
+
+    let alias_w = aliases
+        .iter()
+        .map(|a| a.len())
+        .max()
+        .unwrap_or(5)
+        .max("ALIAS".len());
+    let email_w = meta
+        .values()
+        .map(|(e, _)| e.len())
+        .max()
+        .unwrap_or(5)
+        .max("EMAIL".len());
+    let path_w = meta
+        .values()
+        .map(|(_, p)| p.len())
+        .max()
+        .unwrap_or(4)
+        .max("PATH".len());
+
+    println!(
+        "{:<1} {:<alias_w$}  {:<email_w$}  {:<path_w$}  {:>6} {:>6} {:>6} {:>6} {:>8} {:>7} {:<10}  REASON",
+        " ",
+        "ALIAS",
+        "EMAIL",
+        "PATH",
+        "PRIM",
+        "WEEK",
+        "USAGE",
+        "SCORE",
+        "RESTART",
+        "ACTIVE",
+        "HEALTH",
+        alias_w = alias_w,
+        email_w = email_w,
+        path_w = path_w
+    );
+
+    for alias in aliases {
+        let marker = if selected == Some(alias.as_str()) {
+            "*"
+        } else {
+            " "
+        };
+        let (email, path) = meta
+            .get(&alias)
+            .cloned()
+            .unwrap_or_else(|| ("-".to_string(), "-".to_string()));
+        if let Some(row) = score_by_alias.get(&alias) {
+            let prim = row
+                .primary_left
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "-".to_string());
+            let week = row
+                .secondary_left
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "-".to_string());
+            let score = row
+                .score
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "-".to_string());
+            println!(
+                "{:<1} {:<alias_w$}  {:<email_w$}  {:<path_w$}  {:>6} {:>6} {:>6} {:>6} {:>8} {:>7} {:<10}  {}",
+                marker,
+                alias,
+                email,
+                path,
+                prim,
+                week,
+                row.usage_left,
+                score,
+                row.restart_count,
+                row.active_turns,
+                row.health,
+                row.reason,
+                alias_w = alias_w,
+                email_w = email_w,
+                path_w = path_w
+            );
+        } else {
+            println!(
+                "{:<1} {:<alias_w$}  {:<email_w$}  {:<path_w$}  {:>6} {:>6} {:>6} {:>6} {:>8} {:>7} {:<10}  {}",
+                marker,
+                alias,
+                email,
+                path,
+                "-",
+                "-",
+                "-",
+                "-",
+                "-",
+                "-",
+                "unknown",
+                "missing status",
+                alias_w = alias_w,
+                email_w = email_w,
+                path_w = path_w
+            );
+        }
+    }
+    if let Some(sel) = selected {
+        println!("selected session: {}", sel);
+    } else {
+        println!("selected session: <none>");
+    }
+}
+
 fn next_auto_alias(existing: &[String]) -> String {
     for i in 1..10_000usize {
         let candidate = format!("auto{}", i);
@@ -847,9 +950,9 @@ fn parse_cli(args: &[String]) -> io::Result<CliArgs> {
                 }
                 return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid usage"));
             }
-            "list" => {
+            "status" => {
                 if out.mode == "root" {
-                    out.mode = "list".to_string();
+                    out.mode = "status".to_string();
                     i += 1;
                     continue;
                 }
@@ -1054,9 +1157,9 @@ mod tests {
     }
 
     #[test]
-    fn parse_cli_list_command() {
-        let args = vec!["list".to_string()];
+    fn parse_cli_status_command() {
+        let args = vec!["status".to_string()];
         let parsed = super::parse_cli(&args).expect("parse should succeed");
-        assert_eq!(parsed.mode, "list");
+        assert_eq!(parsed.mode, "status");
     }
 }

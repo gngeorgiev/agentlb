@@ -20,7 +20,7 @@ cargo install --path .
 agentlb config init
 agentlb new work
 agentlb new personal
-agentlb list
+agentlb status
 agentlb new
 agentlb supervisor
 agentlb supervisor start --background
@@ -30,16 +30,58 @@ agentlb supervisor start --background
 
 - `agentlb`
   - Round-robin across existing aliases.
-- `agentlb list`
-  - List known sessions with email (when available) and absolute session path.
+- `agentlb status`
+  - Print one combined table with:
+    - alias
+    - email (when available)
+    - absolute session path
+    - usage/scoring/eligibility columns used by `agentlb new` auto-selection
   - Email is read from each session's auth metadata; `-` means unavailable.
+
+### `agentlb status` Column Legend
+
+The status table includes these columns:
+
+- `*` (first column)
+  - Selection marker.
+  - `*` means this is the session that would be selected by `agentlb new`.
+- `ALIAS`
+  - Session alias directory name under `~/.agentlb/sessions`.
+- `EMAIL`
+  - Account email detected from session auth metadata.
+- `PATH`
+  - Absolute session directory path.
+- `PRIM`
+  - Remaining percent for the primary (short/current) rate-limit window.
+  - `100` means untouched, `0` means exhausted.
+  - `-` means no primary window data is available.
+- `WEEK`
+  - Remaining percent for the secondary (long/weekly) rate-limit window.
+  - `-` means no secondary window data is available.
+- `USAGE`
+  - Blended remaining usage used in scoring (weighted primary/secondary, or fallback).
+- `SCORE`
+  - Final auto-selection score after penalties.
+  - `-` means the session is ineligible (for example stale or unhealthy).
+- `RESTART`
+  - Number of recent managed app-server restart failures for this session.
+- `ACTIVE`
+  - Number of currently active turns tracked for this session.
+- `HEALTH`
+  - Session health used by selector (`healthy` or `unhealthy`).
+- `REASON`
+  - Eligibility reason:
+    - `eligible` means score is active.
+    - examples like `stale (...)` / `unhealthy` explain exclusion.
+
+At the end, `selected session: ...` shows the final winner (or `<none>` when no eligible session exists).
 - `agentlb new <alias>`
   - Create alias if missing.
   - Run login once on first creation.
   - Run command in that alias.
 - `agentlb new <email>`
   - Resolve email to an existing session alias and run that session.
-  - Use `agentlb list` to see available alias/email mappings.
+  - Use `agentlb status` to see available alias/email/path mappings and selection status.
   - If zero matches: returns a not-found error.
   - If multiple matches: returns an ambiguity error and asks for explicit alias.
 - `agentlb new`
@@ -148,7 +190,7 @@ agentlb new gngeorgiev.it@gmail.com -- --search
 agentlb new -- --help
 agentlb rr
 agentlb last -- --search
-agentlb list
+agentlb status
 agentlb supervisor
 agentlb supervisor start --background
 agentlb supervisor restart
@@ -175,7 +217,7 @@ Outcomes:
 - no match: actionable error telling you to create/select alias
 - multiple matches: actionable error listing matching aliases
 
-Use `agentlb list` first when you want to discover alias/email/path mappings.
+Use `agentlb status` first when you want to discover alias/email/path mappings.
 
 ## Config
 

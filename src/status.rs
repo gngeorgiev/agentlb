@@ -318,6 +318,7 @@ pub fn pick_best_session_with_config(
     let mut candidates: Vec<Candidate> = status
         .sessions
         .iter()
+        .filter(|(alias, _)| !alias.starts_with('.'))
         .filter_map(|(alias, sess)| to_candidate(alias, sess, now, cfg))
         .collect();
 
@@ -346,6 +347,7 @@ pub fn score_rows_with_config(
     let mut rows: Vec<SessionScoreRow> = status
         .sessions
         .iter()
+        .filter(|(alias, _)| !alias.starts_with('.'))
         .map(|(alias, sess)| score_row(alias, sess, now, cfg))
         .collect();
     rows.sort_by(|a, b| a.alias.cmp(&b.alias));
