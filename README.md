@@ -11,18 +11,14 @@ For maximum portability share the whole dir with `syncthing` with multiple machi
 ## Build
 
 ```bash
-go build ./cmd/agentlb
+cargo build --release
 ```
 
 ## Install
 
-Install directly from GitHub with Go:
-
 ```bash
-go install github.com/gngeorgiev/agentlb/cmd/agentlb@latest
+cargo install --path .
 ```
-
-Make sure `$GOPATH/bin` (or `$HOME/go/bin`) is on your `PATH`.
 
 ## Quick Start
 
@@ -170,5 +166,5 @@ Permissions are private (`0700` dirs, `0600` state/lock files).
 ## Development
 
 ```bash
-go test ./...
+cargo test
 ```
