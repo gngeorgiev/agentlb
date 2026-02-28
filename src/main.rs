@@ -5,6 +5,7 @@ mod status;
 mod supervisor;
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use clap::{ArgAction, Args, Parser, Subcommand};
 use comfy_table::{Cell, ContentArrangement, Table, modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL};
 use std::io;
 use std::path::Path;
@@ -26,6 +27,87 @@ struct CliArgs {
     print_command: bool,
     supervisor_background: bool,
     passthrough: Vec<String>,
+}
+
+#[derive(Debug, Parser)]
+#[command(
+    name = "agentlb",
+    disable_help_flag = true,
+    disable_version_flag = true
+)]
+struct CliParser {
+    #[arg(short = 'h', long = "help", global = true, action = ArgAction::SetTrue)]
+    help: bool,
+    #[arg(long = "cmd", global = true)]
+    cmd: Option<String>,
+    #[arg(long = "login-cmd", global = true)]
+    login_cmd: Option<String>,
+    #[arg(long = "print-command", global = true, action = ArgAction::SetTrue)]
+    print_command: bool,
+    #[command(subcommand)]
+    command: Option<CliCommand>,
+    #[arg(last = true, allow_hyphen_values = true)]
+    passthrough: Vec<String>,
+}
+
+#[derive(Debug, Subcommand)]
+enum CliCommand {
+    New(NewCommand),
+    Rm(RmCommand),
+    Status,
+    Rr(RunCommand),
+    Last(RunCommand),
+    Supervisor(SupervisorCommand),
+    Config(ConfigCommand),
+}
+
+#[derive(Debug, Args)]
+struct NewCommand {
+    target: Option<String>,
+    #[arg(last = true, allow_hyphen_values = true)]
+    passthrough: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+struct RmCommand {
+    target: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct RunCommand {
+    #[arg(last = true, allow_hyphen_values = true)]
+    passthrough: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+struct SupervisorCommand {
+    #[command(subcommand)]
+    command: Option<SupervisorSubcommand>,
+}
+
+#[derive(Debug, Subcommand)]
+enum SupervisorSubcommand {
+    Start(SupervisorStartCommand),
+    Restart,
+    Stop,
+    Daemon,
+}
+
+#[derive(Debug, Args)]
+struct SupervisorStartCommand {
+    #[arg(long = "background", action = ArgAction::SetTrue)]
+    background: bool,
+}
+
+#[derive(Debug, Args)]
+struct ConfigCommand {
+    #[command(subcommand)]
+    command: Option<ConfigSubcommand>,
+}
+
+#[derive(Debug, Subcommand)]
+enum ConfigSubcommand {
+    Init,
 }
 
 fn main() {
@@ -1003,216 +1085,87 @@ fn print_shell_command(run_cmd: &str, passthrough: &[String], alias: &str, st: &
 }
 
 fn parse_cli(args: &[String]) -> io::Result<CliArgs> {
+    let argv = std::iter::once("agentlb".to_string())
+        .chain(args.iter().cloned())
+        .collect::<Vec<String>>();
+    let parsed = CliParser::try_parse_from(argv).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            err.to_string().trim().to_string(),
+        )
+    })?;
+
     let mut out = CliArgs {
         mode: "root".to_string(),
+        cmd: parsed.cmd.unwrap_or_default(),
+        login_cmd: parsed.login_cmd.unwrap_or_default(),
+        print_command: parsed.print_command,
+        passthrough: parsed.passthrough.clone(),
         ..CliArgs::default()
     };
 
-    let mut i = 0usize;
-    while i < args.len() {
-        let t = &args[i];
-        if (t == "--help" || t == "-h") && out.mode == "root" {
-            out.mode = "help".to_string();
-            i += 1;
-            continue;
+    match parsed.command {
+        None => {
+            if parsed.help {
+                out.mode = "help".to_string();
+            }
         }
-        if t == "--" {
-            out.passthrough.extend_from_slice(&args[i + 1..]);
-            break;
+        Some(CliCommand::New(cmd)) => {
+            out.mode = "new".to_string();
+            out.alias = cmd.target.unwrap_or_default();
+            out.passthrough = cmd.passthrough;
         }
-
-        match t.as_str() {
-            "new" => {
-                if out.mode == "root" {
-                    out.mode = "new".to_string();
-                    i += 1;
-                    continue;
-                }
-                return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid usage"));
+        Some(CliCommand::Rm(cmd)) => {
+            out.mode = "rm".to_string();
+            out.alias = cmd.target.ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "usage: agentlb rm <alias-or-email>")
+            })?;
+        }
+        Some(CliCommand::Status) => {
+            out.mode = "status".to_string();
+        }
+        Some(CliCommand::Rr(cmd)) => {
+            out.mode = "rr".to_string();
+            out.passthrough = cmd.passthrough;
+        }
+        Some(CliCommand::Last(cmd)) => {
+            out.mode = "last".to_string();
+            out.passthrough = cmd.passthrough;
+        }
+        Some(CliCommand::Supervisor(cmd)) => {
+            out.mode = "supervisor_help".to_string();
+            if let Some(sub) = cmd.command {
+                out.mode = match sub {
+                    SupervisorSubcommand::Start(start) => {
+                        out.supervisor_background = start.background;
+                        "supervisor_start".to_string()
+                    }
+                    SupervisorSubcommand::Restart => "supervisor_restart".to_string(),
+                    SupervisorSubcommand::Stop => "supervisor_stop".to_string(),
+                    SupervisorSubcommand::Daemon => "supervisor_daemon".to_string(),
+                };
             }
-            "rm" => {
-                if out.mode == "root" {
-                    out.mode = "rm".to_string();
-                    i += 1;
-                    continue;
-                }
-                return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid usage"));
+            if parsed.help {
+                out.mode = "supervisor_help".to_string();
             }
-            "status" => {
-                if out.mode == "root" {
-                    out.mode = "status".to_string();
-                    i += 1;
-                    continue;
-                }
-                return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid usage"));
-            }
-            "rr" => {
-                if out.mode == "root" {
-                    out.mode = "rr".to_string();
-                    i += 1;
-                    continue;
-                }
-                return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid usage"));
-            }
-            "last" => {
-                if out.mode == "root" {
-                    out.mode = "last".to_string();
-                    i += 1;
-                    continue;
-                }
-                return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid usage"));
-            }
-            "supervisor" => {
-                if out.mode == "root" {
-                    out.mode = "supervisor_help".to_string();
-                    i += 1;
-                    continue;
-                }
-                return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid usage"));
-            }
-            "start" => {
-                if out.mode == "supervisor_help" {
-                    out.mode = "supervisor_start".to_string();
-                    i += 1;
-                    continue;
-                }
-                return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid usage"));
-            }
-            "restart" => {
-                if out.mode == "supervisor_help" {
-                    out.mode = "supervisor_restart".to_string();
-                    i += 1;
-                    continue;
-                }
-                return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid usage"));
-            }
-            "stop" => {
-                if out.mode == "supervisor_help" {
-                    out.mode = "supervisor_stop".to_string();
-                    i += 1;
-                    continue;
-                }
-                return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid usage"));
-            }
-            "daemon" => {
-                if out.mode == "supervisor_help" {
-                    out.mode = "supervisor_daemon".to_string();
-                    i += 1;
-                    continue;
-                }
-                return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid usage"));
-            }
-            "config" => {
-                if out.mode != "root" || i + 1 >= args.len() || args[i + 1] != "init" {
+        }
+        Some(CliCommand::Config(cfg)) => {
+            out.mode = match cfg.command {
+                Some(ConfigSubcommand::Init) => "config_init".to_string(),
+                None => {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidInput,
                         "usage: agentlb config init",
                     ));
                 }
-                out.mode = "config_init".to_string();
-                i += 2;
-                continue;
-            }
-            "--cmd" => {
-                i += 1;
-                if i >= args.len() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "--cmd requires a value",
-                    ));
-                }
-                out.cmd = args[i].clone();
-                i += 1;
-                continue;
-            }
-            "--login-cmd" => {
-                i += 1;
-                if i >= args.len() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "--login-cmd requires a value",
-                    ));
-                }
-                out.login_cmd = args[i].clone();
-                i += 1;
-                continue;
-            }
-            "--background" => {
-                if out.mode != "supervisor_start" {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "unexpected --background",
-                    ));
-                }
-                out.supervisor_background = true;
-                i += 1;
-                continue;
-            }
-            "--print-command" => {
-                out.print_command = true;
-                i += 1;
-                continue;
-            }
-            "--help" | "-h" => {
-                if out.mode == "supervisor_help" {
-                    out.mode = "supervisor_help".to_string();
-                    i += 1;
-                    continue;
-                }
-            }
-            _ => {}
+            };
         }
-
-        if let Some(v) = t.strip_prefix("--cmd=") {
-            out.cmd = v.to_string();
-            i += 1;
-            continue;
-        }
-        if let Some(v) = t.strip_prefix("--login-cmd=") {
-            out.login_cmd = v.to_string();
-            i += 1;
-            continue;
-        }
-        if t.starts_with('-') {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("unknown flag: {}", t),
-            ));
-        }
-        if out.mode == "new" && out.alias.is_empty() {
-            out.alias = t.clone();
-            i += 1;
-            continue;
-        }
-        if out.mode == "rm" && out.alias.is_empty() {
-            out.alias = t.clone();
-            i += 1;
-            continue;
-        }
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("unexpected argument: {}", t),
-        ));
-    }
-
-    if out.mode == "rm" && out.alias.is_empty() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "usage: agentlb rm <alias-or-email>",
-        ));
     }
 
     if out.print_command && !matches!(out.mode.as_str(), "root" | "new" | "rr" | "last") {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "--print-command is only supported for session run commands",
-        ));
-    }
-
-    if out.mode == "root" && !out.alias.is_empty() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "unexpected alias",
         ));
     }
 
