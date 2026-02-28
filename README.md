@@ -29,7 +29,8 @@ agentlb supervisor start --background
 ## Commands
 
 - `agentlb`
-  - Round-robin across existing aliases.
+  - Pick best session using `~/.agentlb/status.json` (same selector as `agentlb new`).
+  - If status is unusable after retry, falls back to existing managed aliases.
   - Use `--print-command` to print the resolved shell command (with `CODEX_HOME`) instead of executing it.
 - `agentlb status`
   - Print one combined table with:
@@ -114,9 +115,9 @@ At the end, `selected session: ...` shows the final winner (or `<none>` when no 
 - `agentlb config init`
   - Write default config to `~/.agentlb/config.toml`.
 
-## Session Selection Algorithm (`agentlb new`)
+## Session Selection Algorithm (`agentlb` / `agentlb new`)
 
-`agentlb new` reads only `~/.agentlb/status.json`.
+`agentlb` and `agentlb new` read only `~/.agentlb/status.json`.
 
 ### 1) Candidate filtering
 

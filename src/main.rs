@@ -219,14 +219,9 @@ fn run(argv: Vec<String>) -> i32 {
             "round_robin",
         ),
         ("last", _) => run_last(&run_cmd, args.print_command, &args.passthrough, &cfg, &st),
-        ("root", _) => run_auto_pick(
-            &run_cmd,
-            args.print_command,
-            &args.passthrough,
-            &cfg,
-            &st,
-            "round_robin",
-        ),
+        ("root", _) => {
+            run_new_with_status_pick(&run_cmd, args.print_command, &args.passthrough, &cfg, &st)
+        }
         _ => {
             eprintln!("invalid mode");
             EXIT_USAGE
