@@ -1,3 +1,4 @@
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use std::error::Error;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -11,6 +12,7 @@ fn config_init_writes_defaults() -> Result<(), Box<dyn Error>> {
 
     let status = Command::new(env!("CARGO_BIN_EXE_agentlb"))
         .env("HOME", home.path())
+        .env("AGENTLB_SUPERVISOR_DISABLED", "1")
         .args(["config", "init"])
         .status()?;
     assert!(status.success());
@@ -32,6 +34,7 @@ fn new_alias_runs_login_and_command_with_session_codex_home() -> Result<(), Box<
 
     let status = Command::new(env!("CARGO_BIN_EXE_agentlb"))
         .env("HOME", home.path())
+        .env("AGENTLB_SUPERVISOR_DISABLED", "1")
         .env("AGENTLB_RECORD_LOGIN", &login_log)
         .env("AGENTLB_RECORD_RUN", &run_log)
         .env("AGENTLB_RECORD_ARGS", &args_log)
@@ -82,12 +85,14 @@ fn auto_pick_round_robin_across_aliases() -> Result<(), Box<dyn Error>> {
 
     let status = Command::new(env!("CARGO_BIN_EXE_agentlb"))
         .env("HOME", home.path())
+        .env("AGENTLB_SUPERVISOR_DISABLED", "1")
         .env("AGENTLB_RECORD_RUN", &run_log)
         .status()?;
     assert!(status.success());
 
     let status = Command::new(env!("CARGO_BIN_EXE_agentlb"))
         .env("HOME", home.path())
+        .env("AGENTLB_SUPERVISOR_DISABLED", "1")
         .env("AGENTLB_RECORD_RUN", &run_log)
         .status()?;
     assert!(status.success());
@@ -110,6 +115,139 @@ fn auto_pick_round_robin_across_aliases() -> Result<(), Box<dyn Error>> {
             .to_string()
     );
 
+    Ok(())
+}
+
+#[test]
+fn supervisor_help_only_prints_usage() -> Result<(), Box<dyn Error>> {
+    let home = TempDir::new()?;
+
+    let out1 = Command::new(env!("CARGO_BIN_EXE_agentlb"))
+        .env("HOME", home.path())
+        .args(["supervisor"])
+        .output()?;
+    assert!(out1.status.success());
+    let stdout1 = String::from_utf8_lossy(&out1.stdout);
+    assert!(stdout1.contains("usage:"));
+    assert!(!home.path().join(".agentlb/supervisor.pid").exists());
+    Ok(())
+}
+
+#[test]
+fn supervisor_start_background_reports_and_starts() -> Result<(), Box<dyn Error>> {
+    let home = TempDir::new()?;
+    let out1 = Command::new(env!("CARGO_BIN_EXE_agentlb"))
+        .env("HOME", home.path())
+        .args(["supervisor", "start", "--background"])
+        .output()?;
+    assert!(out1.status.success());
+    let stdout1 = String::from_utf8_lossy(&out1.stdout);
+    assert!(stdout1.contains("supervisor is not running"));
+    assert!(stdout1.contains("started supervisor in background"));
+
+    let pid_path = home.path().join(".agentlb/supervisor.pid");
+    let pid1: i32 = fs::read_to_string(&pid_path)?.trim().parse()?;
+
+    let out2 = Command::new(env!("CARGO_BIN_EXE_agentlb"))
+        .env("HOME", home.path())
+        .args(["supervisor", "start", "--background"])
+        .output()?;
+    assert!(out2.status.success());
+    let stdout2 = String::from_utf8_lossy(&out2.stdout);
+    assert!(stdout2.contains("supervisor is running"));
+
+    let _ = Command::new("kill").arg(pid1.to_string()).status()?;
+    Ok(())
+}
+
+#[test]
+fn supervisor_restart_restarts_pid() -> Result<(), Box<dyn Error>> {
+    let home = TempDir::new()?;
+    let out1 = Command::new(env!("CARGO_BIN_EXE_agentlb"))
+        .env("HOME", home.path())
+        .args(["supervisor", "start", "--background"])
+        .output()?;
+    assert!(out1.status.success());
+    let pid_path = home.path().join(".agentlb/supervisor.pid");
+    let pid1: i32 = fs::read_to_string(&pid_path)?.trim().parse()?;
+
+    let out2 = Command::new(env!("CARGO_BIN_EXE_agentlb"))
+        .env("HOME", home.path())
+        .args(["supervisor", "restart"])
+        .output()?;
+    assert!(out2.status.success());
+    let stdout2 = String::from_utf8_lossy(&out2.stdout);
+    assert!(stdout2.contains("supervisor restarted"));
+
+    let pid2: i32 = fs::read_to_string(&pid_path)?.trim().parse()?;
+    assert_ne!(pid1, pid2);
+
+    let _ = Command::new("kill").arg(pid2.to_string()).status()?;
+    Ok(())
+}
+
+#[test]
+fn supervisor_stop_stops_running_supervisor() -> Result<(), Box<dyn Error>> {
+    let home = TempDir::new()?;
+    let out1 = Command::new(env!("CARGO_BIN_EXE_agentlb"))
+        .env("HOME", home.path())
+        .args(["supervisor", "start", "--background"])
+        .output()?;
+    assert!(out1.status.success());
+    let pid_path = home.path().join(".agentlb/supervisor.pid");
+    let pid: i32 = fs::read_to_string(&pid_path)?.trim().parse()?;
+
+    let out2 = Command::new(env!("CARGO_BIN_EXE_agentlb"))
+        .env("HOME", home.path())
+        .args(["supervisor", "stop"])
+        .output()?;
+    assert!(out2.status.success());
+    let stdout2 = String::from_utf8_lossy(&out2.stdout);
+    assert!(stdout2.contains("stopping supervisor"));
+
+    let out3 = Command::new("kill")
+        .arg("-0")
+        .arg(pid.to_string())
+        .status()?;
+    assert!(!out3.success());
+    Ok(())
+}
+
+#[test]
+fn list_prints_alias_email_and_path() -> Result<(), Box<dyn Error>> {
+    let home = TempDir::new()?;
+    let sessions = home.path().join(".agentlb/sessions");
+    fs::create_dir_all(sessions.join("a"))?;
+    fs::create_dir_all(sessions.join("b"))?;
+
+    let payload = r#"{"email":"a@example.com"}"#;
+    let token = format!("x.{}.y", URL_SAFE_NO_PAD.encode(payload.as_bytes()));
+    fs::write(
+        sessions.join("a/auth.json"),
+        format!(r#"{{"tokens":{{"id_token":"{}"}}}}"#, token),
+    )?;
+
+    let out = Command::new(env!("CARGO_BIN_EXE_agentlb"))
+        .env("HOME", home.path())
+        .env("AGENTLB_SUPERVISOR_DISABLED", "1")
+        .args(["list"])
+        .output()?;
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("ALIAS"));
+    assert!(stdout.contains("EMAIL"));
+    assert!(stdout.contains("PATH"));
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert!(lines
+        .iter()
+        .any(|l| l.trim_start().starts_with('a')
+            && l.contains("a@example.com")
+            && l.contains("/.agentlb/sessions/a")));
+    assert!(lines
+        .iter()
+        .any(|l| l.trim_start().starts_with('b')
+            && l.contains(" - ")
+            && l.contains("/.agentlb/sessions/b")));
     Ok(())
 }
 

@@ -1,8 +1,12 @@
 mod config;
 mod session;
 mod state;
+mod status;
+mod supervisor;
 
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use std::io;
+use std::path::Path;
 
 const EXIT_OK: i32 = 0;
 const EXIT_GENERIC: i32 = 1;
@@ -18,6 +22,7 @@ struct CliArgs {
     alias: String,
     cmd: String,
     login_cmd: String,
+    supervisor_background: bool,
     passthrough: Vec<String>,
 }
 
@@ -35,6 +40,11 @@ fn run(argv: Vec<String>) -> i32 {
         }
     };
 
+    if args.mode == "help" {
+        print_help();
+        return EXIT_OK;
+    }
+
     let st = match state::Store::new() {
         Ok(st) => st,
         Err(err) => {
@@ -47,6 +57,31 @@ fn run(argv: Vec<String>) -> i32 {
         return EXIT_GENERIC;
     }
 
+    if args.mode == "supervisor_daemon" {
+        if let Err(err) = supervisor::run_daemon(&st) {
+            eprintln!("{}", err);
+            return EXIT_GENERIC;
+        }
+        return EXIT_OK;
+    }
+    if args.mode == "supervisor_help" {
+        print_supervisor_help();
+        return EXIT_OK;
+    }
+    if args.mode == "supervisor_start" {
+        if !args.supervisor_background {
+            eprintln!("usage: agentlb supervisor start --background");
+            return EXIT_USAGE;
+        }
+        return run_supervisor_background(&st);
+    }
+    if args.mode == "supervisor_restart" {
+        return run_supervisor_restart(&st);
+    }
+    if args.mode == "supervisor_stop" {
+        return run_supervisor_stop(&st);
+    }
+
     if args.mode == "config_init" {
         if let Err(err) = config::write_config_file(&st.config_path, &config::default_config()) {
             eprintln!("{}", err);
@@ -54,6 +89,14 @@ fn run(argv: Vec<String>) -> i32 {
         }
         println!("{}", st.config_path.display());
         return EXIT_OK;
+    }
+    if args.mode == "list" {
+        return run_list(&st);
+    }
+
+    if let Err(err) = supervisor::ensure_running(&st) {
+        eprintln!("{}", err);
+        return EXIT_GENERIC;
     }
 
     let cfg = match config::load(&st.config_path) {
@@ -76,13 +119,9 @@ fn run(argv: Vec<String>) -> i32 {
             &cfg,
             &st,
         ),
-        ("new", true) => run_auto_pick(
-            &run_cmd,
-            &args.passthrough,
-            &cfg,
-            &st,
-            &cfg.sessions.pick_behavior,
-        ),
+        ("new", true) => {
+            run_new_with_status_pick(&run_cmd, &login_cmd, &args.passthrough, &cfg, &st)
+        }
         ("rr", _) => run_auto_pick(&run_cmd, &args.passthrough, &cfg, &st, "round_robin"),
         ("last", _) => run_last(&run_cmd, &args.passthrough, &cfg, &st),
         ("root", _) => run_auto_pick(&run_cmd, &args.passthrough, &cfg, &st, "round_robin"),
@@ -91,6 +130,232 @@ fn run(argv: Vec<String>) -> i32 {
             EXIT_USAGE
         }
     }
+}
+
+fn run_supervisor_background(st: &state::Store) -> i32 {
+    let before = supervisor::current_state(st);
+    if before.is_running {
+        if let Some(pid) = before.pid_in_file {
+            println!("supervisor is running (pid {})", pid);
+        } else {
+            println!("supervisor is running");
+        }
+        return EXIT_OK;
+    }
+
+    match before.pid_in_file {
+        Some(pid) => println!("supervisor is not running (stale pid {})", pid),
+        None => println!("supervisor is not running"),
+    }
+
+    if let Err(err) = supervisor::ensure_running(st) {
+        eprintln!("{}", err);
+        return EXIT_GENERIC;
+    }
+
+    let after = supervisor::current_state(st);
+    if after.is_running {
+        if let Some(pid) = after.pid_in_file {
+            println!("started supervisor in background (pid {})", pid);
+        } else {
+            println!("started supervisor in background");
+        }
+    } else {
+        println!("attempted to start supervisor in background");
+    }
+    EXIT_OK
+}
+
+fn run_supervisor_restart(st: &state::Store) -> i32 {
+    let before = supervisor::current_state(st);
+    if before.is_running {
+        if let Some(pid) = before.pid_in_file {
+            println!("stopping supervisor (pid {})", pid);
+            let _ = std::process::Command::new("kill")
+                .arg(pid.to_string())
+                .status();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            while std::time::Instant::now() < deadline {
+                if !supervisor::current_state(st).is_running {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+        }
+    } else if let Some(pid) = before.pid_in_file {
+        println!("supervisor not running (stale pid {})", pid);
+    } else {
+        println!("supervisor not running");
+    }
+
+    if let Err(err) = supervisor::ensure_running(st) {
+        eprintln!("{}", err);
+        return EXIT_GENERIC;
+    }
+    let after = supervisor::current_state(st);
+    if after.is_running {
+        if let Some(pid) = after.pid_in_file {
+            println!("supervisor restarted (pid {})", pid);
+        } else {
+            println!("supervisor restarted");
+        }
+    } else {
+        println!("attempted supervisor restart");
+    }
+    EXIT_OK
+}
+
+fn run_supervisor_stop(st: &state::Store) -> i32 {
+    let before = supervisor::current_state(st);
+    if before.is_running {
+        if let Some(pid) = before.pid_in_file {
+            println!("stopping supervisor (pid {})", pid);
+            let _ = std::process::Command::new("kill")
+                .arg(pid.to_string())
+                .status();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            while std::time::Instant::now() < deadline {
+                if !supervisor::current_state(st).is_running {
+                    println!("supervisor stopped");
+                    return EXIT_OK;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            println!("supervisor stop requested");
+            return EXIT_OK;
+        }
+        println!("supervisor running");
+        return EXIT_OK;
+    }
+
+    if let Some(pid) = before.pid_in_file {
+        println!("supervisor already stopped (stale pid {})", pid);
+    } else {
+        println!("supervisor already stopped");
+    }
+    EXIT_OK
+}
+
+fn print_supervisor_help() {
+    println!("usage:");
+    println!("  agentlb supervisor");
+    println!("  agentlb supervisor start --background");
+    println!("  agentlb supervisor restart");
+    println!("  agentlb supervisor stop");
+}
+
+fn print_help() {
+    println!("usage:");
+    println!("  agentlb [--cmd <command>] [-- <args...>]");
+    println!("  agentlb list");
+    println!("  agentlb new [<alias>] [--cmd <command>] [--login-cmd <command>] [-- <args...>]");
+    println!("  agentlb rr [--cmd <command>] [-- <args...>]");
+    println!("  agentlb last [--cmd <command>] [-- <args...>]");
+    println!("  agentlb supervisor");
+    println!("  agentlb supervisor start --background");
+    println!("  agentlb supervisor restart");
+    println!("  agentlb supervisor stop");
+    println!("  agentlb config init");
+}
+
+fn run_list(st: &state::Store) -> i32 {
+    let aliases = match st.list_aliases() {
+        Ok(v) => v,
+        Err(err) => {
+            eprintln!("{}", err);
+            return EXIT_GENERIC;
+        }
+    };
+
+    let mut rows: Vec<(String, String, String)> = Vec::new();
+    for alias in aliases.iter().filter(|a| !a.starts_with('.')) {
+        let path = st.session_dir(alias);
+        let email = read_session_email(&path).unwrap_or_else(|| "-".to_string());
+        rows.push((alias.clone(), email, path.display().to_string()));
+    }
+
+    let alias_w = rows
+        .iter()
+        .map(|(a, _, _)| a.len())
+        .max()
+        .unwrap_or(5)
+        .max("ALIAS".len());
+    let email_w = rows
+        .iter()
+        .map(|(_, e, _)| e.len())
+        .max()
+        .unwrap_or(5)
+        .max("EMAIL".len());
+
+    println!(
+        "{:<alias_w$}  {:<email_w$}  PATH",
+        "ALIAS",
+        "EMAIL",
+        alias_w = alias_w,
+        email_w = email_w
+    );
+    for (alias, email, path) in rows {
+        println!(
+            "{:<alias_w$}  {:<email_w$}  {}",
+            alias,
+            email,
+            path,
+            alias_w = alias_w,
+            email_w = email_w
+        );
+    }
+    EXIT_OK
+}
+
+fn read_session_email(session_dir: &Path) -> Option<String> {
+    let auth_path = session_dir.join("auth.json");
+    let bytes = std::fs::read(auth_path).ok()?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+
+    if let Some(v) = extract_email(&value) {
+        return Some(v);
+    }
+    let id_token = value
+        .get("tokens")
+        .and_then(|v| v.get("id_token"))
+        .and_then(|v| v.as_str())?;
+    decode_jwt_email(id_token)
+}
+
+fn extract_email(v: &serde_json::Value) -> Option<String> {
+    match v {
+        serde_json::Value::Object(map) => {
+            if let Some(email) = map.get("email").and_then(|e| e.as_str())
+                && email.contains('@')
+            {
+                return Some(email.to_string());
+            }
+            for value in map.values() {
+                if let Some(email) = extract_email(value) {
+                    return Some(email);
+                }
+            }
+            None
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                if let Some(email) = extract_email(item) {
+                    return Some(email);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn decode_jwt_email(token: &str) -> Option<String> {
+    let mut parts = token.split('.');
+    let _header = parts.next()?;
+    let payload = parts.next()?;
+    let bytes = URL_SAFE_NO_PAD.decode(payload.as_bytes()).ok()?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    extract_email(&value)
 }
 
 fn run_new_alias(
@@ -161,6 +426,90 @@ fn run_new_alias(
             EXIT_GENERIC
         }
     }
+}
+
+fn run_new_with_status_pick(
+    run_cmd: &str,
+    login_cmd: &str,
+    passthrough: &[String],
+    cfg: &config::Config,
+    st: &state::Store,
+) -> i32 {
+    let scoring_cfg = status::ScoringConfig::from(&cfg.sessions);
+    if let Some(winner) = status::pick_best_session_with_retry_and_config(st, 3000, &scoring_cfg) {
+        let _lock = match st.lock() {
+            Ok(l) => l,
+            Err(err) => {
+                eprintln!("{}", err);
+                return EXIT_GENERIC;
+            }
+        };
+
+        let aliases = match st.list_aliases() {
+            Ok(v) => v,
+            Err(err) => {
+                eprintln!("{}", err);
+                return EXIT_GENERIC;
+            }
+        };
+        if !aliases.iter().any(|a| a == &winner) {
+            return run_new_alias(
+                &next_auto_alias(&aliases),
+                run_cmd,
+                login_cmd,
+                passthrough,
+                cfg,
+                st,
+            );
+        }
+
+        let mut g = match st.load_global() {
+            Ok(g) => g,
+            Err(err) => {
+                eprintln!("{}", err);
+                return EXIT_GENERIC;
+            }
+        };
+        g.last_alias = winner.clone();
+        if let Err(err) = st.save_global(&g) {
+            eprintln!("{}", err);
+            return EXIT_GENERIC;
+        }
+        if let Err(err) = st.record_assignment(&winner, cfg.sessions.assignment_history_window) {
+            eprintln!("{}", err);
+            return EXIT_GENERIC;
+        }
+
+        status::mark_selected(st, &winner);
+
+        return match session::run_command(run_cmd, passthrough, &winner, st) {
+            Ok(code) => code,
+            Err(err) => {
+                eprintln!("{}", err);
+                EXIT_GENERIC
+            }
+        };
+    }
+
+    let aliases = match st.list_aliases() {
+        Ok(v) => v,
+        Err(err) => {
+            eprintln!("{}", err);
+            return EXIT_GENERIC;
+        }
+    };
+    let alias = next_auto_alias(&aliases);
+    run_new_alias(&alias, run_cmd, login_cmd, passthrough, cfg, st)
+}
+
+fn next_auto_alias(existing: &[String]) -> String {
+    for i in 1..10_000usize {
+        let candidate = format!("auto{}", i);
+        if !existing.iter().any(|a| a == &candidate) {
+            return candidate;
+        }
+    }
+    format!("auto{}", chrono::Utc::now().timestamp())
 }
 
 fn run_auto_pick(
@@ -364,6 +713,11 @@ fn parse_cli(args: &[String]) -> io::Result<CliArgs> {
     let mut i = 0usize;
     while i < args.len() {
         let t = &args[i];
+        if (t == "--help" || t == "-h") && out.mode == "root" {
+            out.mode = "help".to_string();
+            i += 1;
+            continue;
+        }
         if t == "--" {
             out.passthrough.extend_from_slice(&args[i + 1..]);
             break;
@@ -373,6 +727,14 @@ fn parse_cli(args: &[String]) -> io::Result<CliArgs> {
             "new" => {
                 if out.mode == "root" {
                     out.mode = "new".to_string();
+                    i += 1;
+                    continue;
+                }
+                return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid usage"));
+            }
+            "list" => {
+                if out.mode == "root" {
+                    out.mode = "list".to_string();
                     i += 1;
                     continue;
                 }
@@ -389,6 +751,46 @@ fn parse_cli(args: &[String]) -> io::Result<CliArgs> {
             "last" => {
                 if out.mode == "root" {
                     out.mode = "last".to_string();
+                    i += 1;
+                    continue;
+                }
+                return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid usage"));
+            }
+            "supervisor" => {
+                if out.mode == "root" {
+                    out.mode = "supervisor_help".to_string();
+                    i += 1;
+                    continue;
+                }
+                return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid usage"));
+            }
+            "start" => {
+                if out.mode == "supervisor_help" {
+                    out.mode = "supervisor_start".to_string();
+                    i += 1;
+                    continue;
+                }
+                return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid usage"));
+            }
+            "restart" => {
+                if out.mode == "supervisor_help" {
+                    out.mode = "supervisor_restart".to_string();
+                    i += 1;
+                    continue;
+                }
+                return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid usage"));
+            }
+            "stop" => {
+                if out.mode == "supervisor_help" {
+                    out.mode = "supervisor_stop".to_string();
+                    i += 1;
+                    continue;
+                }
+                return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid usage"));
+            }
+            "daemon" => {
+                if out.mode == "supervisor_help" {
+                    out.mode = "supervisor_daemon".to_string();
                     i += 1;
                     continue;
                 }
@@ -428,6 +830,24 @@ fn parse_cli(args: &[String]) -> io::Result<CliArgs> {
                 out.login_cmd = args[i].clone();
                 i += 1;
                 continue;
+            }
+            "--background" => {
+                if out.mode != "supervisor_start" {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "unexpected --background",
+                    ));
+                }
+                out.supervisor_background = true;
+                i += 1;
+                continue;
+            }
+            "--help" | "-h" => {
+                if out.mode == "supervisor_help" {
+                    out.mode = "supervisor_help".to_string();
+                    i += 1;
+                    continue;
+                }
             }
             _ => {}
         }
@@ -490,5 +910,38 @@ mod tests {
     #[test]
     fn keep_exit_code_alias_not_found_reserved() {
         assert_eq!(super::EXIT_ALIAS_NOT_FOUND, 3);
+    }
+
+    #[test]
+    fn parse_cli_accepts_supervisor_background() {
+        let args = vec![
+            "supervisor".to_string(),
+            "start".to_string(),
+            "--background".to_string(),
+        ];
+        let parsed = super::parse_cli(&args).expect("parse should succeed");
+        assert_eq!(parsed.mode, "supervisor_start");
+        assert!(parsed.supervisor_background);
+    }
+
+    #[test]
+    fn parse_cli_supervisor_without_subcommand_shows_help_mode() {
+        let args = vec!["supervisor".to_string()];
+        let parsed = super::parse_cli(&args).expect("parse should succeed");
+        assert_eq!(parsed.mode, "supervisor_help");
+    }
+
+    #[test]
+    fn parse_cli_accepts_global_help_flag() {
+        let args = vec!["--help".to_string()];
+        let parsed = super::parse_cli(&args).expect("parse should succeed");
+        assert_eq!(parsed.mode, "help");
+    }
+
+    #[test]
+    fn parse_cli_list_command() {
+        let args = vec!["list".to_string()];
+        let parsed = super::parse_cli(&args).expect("parse should succeed");
+        assert_eq!(parsed.mode, "list");
     }
 }

@@ -1,12 +1,6 @@
 # agentlb
 
-`agentlb` runs Codex with isolated per-alias `CODEX_HOME`.
-
-Others will come.
-
-Each alias has its own directory at `~/.agentlb/sessions/<alias>`, so auth/config/history stay separate.
-
-For maximum portability share the whole dir with `syncthing` with multiple machines. Maybe within your tailscale network idk.
+`agentlb` runs Codex with isolated per-alias `CODEX_HOME` and a background supervisor that tracks session usage in `~/.agentlb/status.json`.
 
 ## Build
 
@@ -24,57 +18,133 @@ cargo install --path .
 
 ```bash
 agentlb config init
-agentlb new a1
-agentlb new a2
-agentlb
+agentlb new work
+agentlb new personal
+agentlb list
+agentlb new
+agentlb supervisor
+agentlb supervisor start --background
 ```
 
 ## Commands
 
 - `agentlb`
-  - Auto-pick alias via round-robin and run default command.
-- `agentlb new`
-  - Auto-pick alias and run default command.
-  - Pick behavior is controlled by `sessions.pick_behavior` in config.
+  - Round-robin across existing aliases.
+- `agentlb list`
+  - List known sessions with email (when available) and absolute session path.
 - `agentlb new <alias>`
-  - Create alias session if missing.
-  - Run login command only on first creation.
-  - Run default command in that alias.
+  - Create alias if missing.
+  - Run login once on first creation.
+  - Run command in that alias.
+- `agentlb new`
+  - Pick best session using `~/.agentlb/status.json` (usage-aware selection).
+  - If status is unusable after retry, creates a new alias (`auto1`, `auto2`, ...).
 - `agentlb rr`
-  - Force round-robin pick explicitly.
-  - Ignores `sessions.pick_behavior`.
+  - Force round-robin across aliases.
 - `agentlb last`
-  - Run using the most recently selected alias.
-  - Deterministic: keeps using the same alias until another command changes the last alias.
+  - Run the most recently selected alias.
+- `agentlb supervisor`
+  - Print supervisor command help.
+- `agentlb supervisor start --background`
+  - Print current supervisor status.
+  - Start supervisor in background if needed.
+- `agentlb supervisor restart`
+  - Stop the running supervisor (if any) and start a new background supervisor.
+- `agentlb supervisor stop`
+  - Stop the running supervisor (if any).
 - `agentlb config init`
-  - Write `~/.agentlb/config.toml` with defaults.
-  - Overwrite existing config.
-  - Print config path.
+  - Write default config to `~/.agentlb/config.toml`.
+
+## Session Selection Algorithm (`agentlb new`)
+
+`agentlb new` reads only `~/.agentlb/status.json`.
+
+### 1) Candidate filtering
+
+A session is eligible only if:
+
+- `health == "healthy"`
+- `lastRateLimitUpdateAt` is parseable and not stale
+- staleness threshold: `now - lastRateLimitUpdateAt <= 420s`
+
+### 2) Usage-left calculation (daily + weekly balance)
+
+From rate limit windows:
+
+- `remaining_primary = 100 - primary.usedPercent` (short/current window)
+- `remaining_secondary = 100 - secondary.usedPercent` (weekly window)
+- if both exist:
+  - `usageLeftPercent = 0.60 * remaining_primary + 0.40 * remaining_secondary`
+- if only one exists: use that one
+- if none exist: `usageLeftPercent = 30`
+
+This makes both daily and weekly quota pressure affect picks, instead of letting only one window dominate.
+
+### 3) Score
+
+For each eligible session:
+
+- `score = usageLeftPercent`
+- `score -= activeTurns * 5`
+- `score -= min(restartCount * 2, 20)`
+- `score -= staleness_penalty`
+- `staleness_penalty = clamp((age_sec * 10 / 420), 0, 10)`
+
+Higher score wins.
+
+### 4) Tie-breakers
+
+When scores tie:
+
+1. Higher `usageLeftPercent`
+2. Lower `activeTurns`
+3. Older `lastSelectedAt` (LRU spread)
+4. Lexicographically smaller alias
+
+### 5) Failure fallback
+
+If no usable candidate is found:
+
+- retry status reads for up to `3000ms`
+- if still unusable, create a new alias (`autoN`) and run there
+
+## Supervisor Behavior
+
+On every normal `agentlb` command invocation:
+
+- checks `~/.agentlb/supervisor.pid`
+- starts supervisor if missing/dead
+- continues command flow
+
+Supervisor responsibilities:
+
+- maintain managed `codex app-server` per active alias
+- ingest JSON-RPC usage/status events
+- atomically flush `~/.agentlb/status.json`
+- restart crashed app-servers with exponential backoff + jitter
+- run startup + periodic probes for aliases without active managed app-server
 
 ## Flags
 
 Supported on `agentlb`, `agentlb new`, `agentlb new <alias>`, `agentlb rr`, and `agentlb last`:
 
-- `--cmd "<command string>"` override run command for this invocation.
-- `--login-cmd "<command string>"` override login command for this invocation (new alias only).
-- `-- <args...>` pass-through args appended to run command.
+- `--cmd "<command string>"` override run command for this invocation
+- `--login-cmd "<command string>"` override login command (new alias only)
+- `-- <args...>` pass-through args appended to run command
 
 Examples:
 
 ```bash
 agentlb --cmd "codex --model gpt-5.1-codex-mini"
-agentlb -- --search
-agentlb new work --cmd "codex" -- --help
+agentlb new work -- --search
+agentlb new -- --help
 agentlb rr
 agentlb last -- --search
-```
-
-## SSH Login Tip
-
-If browser auth fails over SSH, use device auth:
-
-```bash
-agentlb new a1 --login-cmd "codex login --device-auth"
+agentlb list
+agentlb supervisor
+agentlb supervisor start --background
+agentlb supervisor restart
+agentlb supervisor stop
 ```
 
 ## Config
@@ -90,58 +160,95 @@ login_command = "codex login"
 [sessions]
 alias_pattern = "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
 assignment_history_window = 30
-pick_behavior = "round_robin" # round_robin | last
+pick_behavior = "round_robin" # currently retained for compatibility
+stale_sec = 420
+busy_penalty = 5
+unknown_usage_left_percent = 30
+usage_primary_weight_percent = 60
+usage_secondary_weight_percent = 40
+restart_penalty_per_restart = 2
+restart_penalty_cap = 20
+staleness_penalty_max = 10
 ```
 
-`assignment_history_window` controls how many recent assignment timestamps are retained per alias in state.
-`pick_behavior` controls how `agentlb new` (without alias) chooses a session.
-`agentlb rr` always uses round-robin regardless of this value.
+Notes:
 
-## Round-Robin Behavior
+- `assignment_history_window` controls retained assignment timestamps per alias.
+- `pick_behavior` is retained in config, but `agentlb new` now uses status-based scoring.
+- The scoring factors above control how `agentlb new` balances short-window and weekly limits and how strongly it penalizes busy/restart/stale sessions.
 
-Aliases are sorted lexicographically and selected using persisted `round_robin_index` from `~/.agentlb/state/global.json`.
+### Scoring Config Reference
 
-With aliases `a`, `b`, `c`, runs rotate as:
+- `stale_sec`
+  - What it does: excludes sessions whose rate-limit data is older than this many seconds.
+  - Increase it when: status updates are less frequent and you still want to use older data.
+  - Decrease it when: you want picks to rely only on very fresh usage info.
+  - Typical range: `300` to `900`.
 
-- run 1 -> `a`
-- run 2 -> `b`
-- run 3 -> `c`
-- run 4 -> `a`
+- `busy_penalty`
+  - What it does: subtracts `activeTurns * busy_penalty` from score.
+  - Increase it when: you want to avoid sessions currently handling turns.
+  - Decrease it when: throughput matters more than spreading active work.
+  - Typical range: `2` to `10`.
 
-`agentlb last` always runs the most recently selected alias (from state).
+- `unknown_usage_left_percent`
+  - What it does: fallback usage-left value when both rate-limit windows are missing.
+  - Increase it when: you want unknown sessions treated as more usable.
+  - Decrease it when: you want unknown sessions deprioritized.
+  - Typical range: `10` to `50`.
 
-## Change Pick Behavior
+- `usage_primary_weight_percent`
+  - What it does: weight for short/current window remaining capacity in blended usage score.
+  - Increase it when: short-window (daily/current) pressure matters more.
+  - Decrease it when: weekly balancing should matter more.
 
-`agentlb` supports two pick behaviors:
+- `usage_secondary_weight_percent`
+  - What it does: weight for weekly window remaining capacity in blended usage score.
+  - Increase it when: you want stronger week-level balancing across sessions.
+  - Decrease it when: short-window responsiveness is more important.
 
-- `round_robin`: next alias in rotation
-- `last`: most recently selected alias
+- `restart_penalty_per_restart`
+  - What it does: per-restart instability penalty before capping.
+  - Increase it when: unstable sessions should be avoided quickly.
+  - Decrease it when: occasional restarts are acceptable.
+  - Typical range: `1` to `5`.
 
-Common patterns:
+- `restart_penalty_cap`
+  - What it does: maximum total restart penalty applied.
+  - Increase it when: stability should heavily influence routing.
+  - Decrease it when: restart history should have limited impact.
+  - Typical range: `10` to `40`.
 
-```bash
-# Keep rotating aliases
-agentlb
+- `staleness_penalty_max`
+  - What it does: max penalty as data age approaches `stale_sec`.
+  - Increase it when: near-stale data should be strongly deprioritized.
+  - Decrease it when: mild staleness should be tolerated.
+  - Typical range: `5` to `20`.
 
-# Make `agentlb new` deterministic via config
-# ~/.agentlb/config.toml -> pick_behavior = "last"
-agentlb new
+### Tuning Guidance
 
-# Override config and force round-robin for this invocation
-agentlb rr
-
-# Explicitly switch to a specific alias, then keep using it deterministically
-agentlb new work
-agentlb new
-agentlb new
-agentlb last
-```
+- Start with defaults unless you already see poor balancing behavior.
+- For stronger daily balancing:
+  - raise `usage_primary_weight_percent`
+  - lower `usage_secondary_weight_percent`
+- For stronger weekly balancing:
+  - raise `usage_secondary_weight_percent`
+  - lower `usage_primary_weight_percent`
+- Keep both usage weights positive; if both are set to `0`, defaults are restored.
+- If picks feel too sticky to busy sessions:
+  - raise `busy_penalty`
+- If picks feel too noisy due to old data:
+  - lower `stale_sec` or raise `staleness_penalty_max`
+- If unstable sessions keep getting selected:
+  - raise `restart_penalty_per_restart` and/or `restart_penalty_cap`
 
 ## Filesystem Layout
 
 ```text
 ~/.agentlb/
   config.toml
+  supervisor.pid
+  status.json
   state/
     global.json
     sessions/
@@ -152,7 +259,7 @@ agentlb last
     state.lock
 ```
 
-Permissions are private (`0700` dirs, `0600` state/lock files).
+Permissions are private (`0700` dirs, `0600` state/lock/status/pid files).
 
 ## Exit Codes
 
@@ -168,3 +275,12 @@ Permissions are private (`0700` dirs, `0600` state/lock files).
 ```bash
 cargo test
 ```
+
+## Test/Debug Environment Variables
+
+- `AGENTLB_SUPERVISOR_DISABLED=1`: disable auto-supervisor startup (useful in tests)
+- `AGENTLB_DAEMON_START_TIMEOUT_MS`: wait timeout for startup detection
+- `AGENTLB_PROBE_INTERVAL_SEC`: inactive-session probe interval
+- `AGENTLB_PROBE_LIFETIME_SEC`: max probe process lifetime
+- `AGENTLB_STATUS_FLUSH_INTERVAL_SEC`: status flush cadence
+- `AGENTLB_MAX_RESTARTS_5M`: crash-loop guard threshold

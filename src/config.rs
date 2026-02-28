@@ -15,6 +15,14 @@ pub struct Sessions {
     pub alias_pattern: String,
     pub assignment_history_window: usize,
     pub pick_behavior: String,
+    pub stale_sec: i64,
+    pub busy_penalty: i64,
+    pub unknown_usage_left_percent: i64,
+    pub usage_primary_weight_percent: i64,
+    pub usage_secondary_weight_percent: i64,
+    pub restart_penalty_per_restart: i64,
+    pub restart_penalty_cap: i64,
+    pub staleness_penalty_max: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -35,6 +43,14 @@ struct PartialSessions {
     alias_pattern: Option<String>,
     assignment_history_window: Option<usize>,
     pick_behavior: Option<String>,
+    stale_sec: Option<i64>,
+    busy_penalty: Option<i64>,
+    unknown_usage_left_percent: Option<i64>,
+    usage_primary_weight_percent: Option<i64>,
+    usage_secondary_weight_percent: Option<i64>,
+    restart_penalty_per_restart: Option<i64>,
+    restart_penalty_cap: Option<i64>,
+    staleness_penalty_max: Option<i64>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -54,6 +70,14 @@ pub fn default_config() -> Config {
             alias_pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$".to_string(),
             assignment_history_window: 30,
             pick_behavior: "round_robin".to_string(),
+            stale_sec: 420,
+            busy_penalty: 5,
+            unknown_usage_left_percent: 30,
+            usage_primary_weight_percent: 60,
+            usage_secondary_weight_percent: 40,
+            restart_penalty_per_restart: 2,
+            restart_penalty_cap: 20,
+            staleness_penalty_max: 10,
         },
     }
 }
@@ -111,6 +135,30 @@ pub fn load(path: &Path) -> io::Result<Config> {
         if let Some(v) = s.pick_behavior {
             cfg.sessions.pick_behavior = v;
         }
+        if let Some(v) = s.stale_sec {
+            cfg.sessions.stale_sec = v;
+        }
+        if let Some(v) = s.busy_penalty {
+            cfg.sessions.busy_penalty = v;
+        }
+        if let Some(v) = s.unknown_usage_left_percent {
+            cfg.sessions.unknown_usage_left_percent = v;
+        }
+        if let Some(v) = s.usage_primary_weight_percent {
+            cfg.sessions.usage_primary_weight_percent = v;
+        }
+        if let Some(v) = s.usage_secondary_weight_percent {
+            cfg.sessions.usage_secondary_weight_percent = v;
+        }
+        if let Some(v) = s.restart_penalty_per_restart {
+            cfg.sessions.restart_penalty_per_restart = v;
+        }
+        if let Some(v) = s.restart_penalty_cap {
+            cfg.sessions.restart_penalty_cap = v;
+        }
+        if let Some(v) = s.staleness_penalty_max {
+            cfg.sessions.staleness_penalty_max = v;
+        }
     }
 
     if cfg.runner.default_command.trim().is_empty() {
@@ -127,6 +175,37 @@ pub fn load(path: &Path) -> io::Result<Config> {
     }
     if cfg.sessions.pick_behavior != "round_robin" && cfg.sessions.pick_behavior != "last" {
         cfg.sessions.pick_behavior = defaults.sessions.pick_behavior;
+    }
+    if cfg.sessions.stale_sec <= 0 {
+        cfg.sessions.stale_sec = defaults.sessions.stale_sec;
+    }
+    if cfg.sessions.busy_penalty < 0 {
+        cfg.sessions.busy_penalty = defaults.sessions.busy_penalty;
+    }
+    if !(0..=100).contains(&cfg.sessions.unknown_usage_left_percent) {
+        cfg.sessions.unknown_usage_left_percent = defaults.sessions.unknown_usage_left_percent;
+    }
+    if cfg.sessions.usage_primary_weight_percent < 0 {
+        cfg.sessions.usage_primary_weight_percent = defaults.sessions.usage_primary_weight_percent;
+    }
+    if cfg.sessions.usage_secondary_weight_percent < 0 {
+        cfg.sessions.usage_secondary_weight_percent =
+            defaults.sessions.usage_secondary_weight_percent;
+    }
+    if cfg.sessions.usage_primary_weight_percent + cfg.sessions.usage_secondary_weight_percent <= 0
+    {
+        cfg.sessions.usage_primary_weight_percent = defaults.sessions.usage_primary_weight_percent;
+        cfg.sessions.usage_secondary_weight_percent =
+            defaults.sessions.usage_secondary_weight_percent;
+    }
+    if cfg.sessions.restart_penalty_per_restart < 0 {
+        cfg.sessions.restart_penalty_per_restart = defaults.sessions.restart_penalty_per_restart;
+    }
+    if cfg.sessions.restart_penalty_cap < 0 {
+        cfg.sessions.restart_penalty_cap = defaults.sessions.restart_penalty_cap;
+    }
+    if cfg.sessions.staleness_penalty_max < 0 {
+        cfg.sessions.staleness_penalty_max = defaults.sessions.staleness_penalty_max;
     }
 
     Ok(cfg)

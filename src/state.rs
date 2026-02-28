@@ -30,6 +30,8 @@ pub struct Store {
     pub state_dir: PathBuf,
     pub session_state_dir: PathBuf,
     pub global_state_path: PathBuf,
+    pub supervisor_pid_path: PathBuf,
+    pub status_path: PathBuf,
     pub lock_path: PathBuf,
 }
 
@@ -64,6 +66,8 @@ impl Store {
             state_dir: root.join("state"),
             session_state_dir: root.join("state").join("sessions"),
             global_state_path: root.join("state").join("global.json"),
+            supervisor_pid_path: root.join("supervisor.pid"),
+            status_path: root.join("status.json"),
             lock_path: root.join("locks").join("state.lock"),
         })
     }
@@ -197,6 +201,10 @@ impl Store {
     }
 
     fn write_json<T: Serialize>(&self, path: &Path, value: &T) -> io::Result<()> {
+        self.write_json_atomic(path, value)
+    }
+
+    pub fn write_json_atomic<T: Serialize>(&self, path: &Path, value: &T) -> io::Result<()> {
         let parent = path
             .parent()
             .ok_or_else(|| io::Error::other("invalid path"))?;
@@ -205,7 +213,31 @@ impl Store {
         let mut bytes = serde_json::to_vec_pretty(value)
             .map_err(|err| io::Error::other(format!("serialize json failed: {}", err)))?;
         bytes.push(b'\n');
-        fs::write(path, bytes)?;
+        let tmp = parent.join(format!(
+            ".{}.tmp.{}",
+            path.file_name().and_then(|s| s.to_str()).unwrap_or("state"),
+            std::process::id()
+        ));
+        fs::write(&tmp, bytes)?;
+        set_mode(&tmp, 0o600)?;
+        fs::rename(&tmp, path)?;
         set_mode(path, 0o600)
+    }
+
+    pub fn write_text_atomic(&self, path: &Path, value: &str, mode: u32) -> io::Result<()> {
+        let parent = path
+            .parent()
+            .ok_or_else(|| io::Error::other("invalid path"))?;
+        fs::create_dir_all(parent)?;
+        set_mode(parent, 0o700)?;
+        let tmp = parent.join(format!(
+            ".{}.tmp.{}",
+            path.file_name().and_then(|s| s.to_str()).unwrap_or("state"),
+            std::process::id()
+        ));
+        fs::write(&tmp, value.as_bytes())?;
+        set_mode(&tmp, mode)?;
+        fs::rename(&tmp, path)?;
+        set_mode(path, mode)
     }
 }
