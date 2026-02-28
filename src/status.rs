@@ -192,6 +192,7 @@ pub struct SessionScoreRow {
     pub health: String,
     pub primary_left: Option<i64>,
     pub secondary_left: Option<i64>,
+    pub refresh_age_sec: Option<i64>,
     pub usage_left: i64,
     pub active_turns: i64,
     pub restart_count: i64,
@@ -207,6 +208,8 @@ fn score_row(
 ) -> SessionScoreRow {
     let primary_left = window_left(&sess.rate_limits.primary);
     let secondary_left = window_left(&sess.rate_limits.secondary);
+    let refresh_age_sec = parse_ts(&sess.last_rate_limit_update_at)
+        .map(|last_update| now.signed_duration_since(last_update).num_seconds().max(0));
     let usage_left = compute_usage_left(sess, cfg).clamp(0, 100);
     let active_turns = sess.activity.active_turns.max(0);
     let restart_count = sess.app_server.restart_count.max(0);
@@ -217,6 +220,7 @@ fn score_row(
             health: sess.health.clone(),
             primary_left,
             secondary_left,
+            refresh_age_sec,
             usage_left,
             active_turns,
             restart_count,
@@ -231,6 +235,7 @@ fn score_row(
             health: sess.health.clone(),
             primary_left,
             secondary_left,
+            refresh_age_sec,
             usage_left,
             active_turns,
             restart_count,
@@ -245,6 +250,7 @@ fn score_row(
             health: sess.health.clone(),
             primary_left,
             secondary_left,
+            refresh_age_sec,
             usage_left,
             active_turns,
             restart_count,
@@ -271,6 +277,7 @@ fn score_row(
         health: sess.health.clone(),
         primary_left,
         secondary_left,
+        refresh_age_sec,
         usage_left,
         active_turns,
         restart_count,

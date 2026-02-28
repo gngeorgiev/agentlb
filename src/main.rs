@@ -5,6 +5,7 @@ mod status;
 mod supervisor;
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use comfy_table::{Cell, ContentArrangement, Table, modifiers::UTF8_ROUND_CORNERS, presets::UTF8_FULL};
 use std::io;
 use std::path::Path;
 
@@ -559,7 +560,7 @@ fn run_new_with_status_pick(
     let winner = status::pick_best_session_with_retry_and_config(st, 3000, &scoring_cfg);
     if let Ok(sf) = status::load_status(st) {
         let report = render_unified_status_table(st, &sf, &scoring_cfg, winner.as_deref());
-        eprint!("{}", report);
+        print!("{}", report);
     }
     if let Some(winner) = winner {
         let winner_exists = {
@@ -655,44 +656,26 @@ fn render_unified_status_table(
         meta.insert(alias.clone(), (email, path.display().to_string()));
     }
 
-    let alias_w = aliases
-        .iter()
-        .map(|a| a.len())
-        .max()
-        .unwrap_or(5)
-        .max("ALIAS".len());
-    let email_w = meta
-        .values()
-        .map(|(e, _)| e.len())
-        .max()
-        .unwrap_or(5)
-        .max("EMAIL".len());
-    let path_w = meta
-        .values()
-        .map(|(_, p)| p.len())
-        .max()
-        .unwrap_or(4)
-        .max("PATH".len());
-
-    let mut out = String::new();
-    out.push_str(&format!(
-        "{:<1} {:<alias_w$}  {:<email_w$}  {:<path_w$}  {:>6} {:>6} {:>6} {:>6} {:>8} {:>7} {:<10}  REASON",
-        " ",
-        "ALIAS",
-        "EMAIL",
-        "PATH",
-        "PRIM",
-        "WEEK",
-        "USAGE",
-        "SCORE",
-        "RESTART",
-        "ACTIVE",
-        "HEALTH",
-        alias_w = alias_w,
-        email_w = email_w,
-        path_w = path_w
-    ));
-    out.push('\n');
+    let mut table = Table::new();
+    table
+        .load_preset(UTF8_FULL)
+        .apply_modifier(UTF8_ROUND_CORNERS)
+        .set_content_arrangement(ContentArrangement::Disabled)
+        .set_header(vec![
+            Cell::new("SEL"),
+            Cell::new("ALIAS"),
+            Cell::new("EMAIL"),
+            Cell::new("PATH"),
+            Cell::new("PRIM"),
+            Cell::new("WEEK"),
+            Cell::new("USAGE"),
+            Cell::new("REFRESH"),
+            Cell::new("SCORE"),
+            Cell::new("RESTART"),
+            Cell::new("ACTIVE"),
+            Cell::new("HEALTH"),
+            Cell::new("REASON"),
+        ]);
 
     for alias in aliases {
         let marker = if selected == Some(alias.as_str()) {
@@ -717,47 +700,42 @@ fn render_unified_status_table(
                 .score
                 .map(|v| v.to_string())
                 .unwrap_or_else(|| "-".to_string());
-            out.push_str(&format!(
-                "{:<1} {:<alias_w$}  {:<email_w$}  {:<path_w$}  {:>6} {:>6} {:>6} {:>6} {:>8} {:>7} {:<10}  {}",
-                marker,
-                alias,
-                email,
-                path,
-                prim,
-                week,
-                row.usage_left,
-                score,
-                row.restart_count,
-                row.active_turns,
-                row.health,
-                row.reason,
-                alias_w = alias_w,
-                email_w = email_w,
-                path_w = path_w
-            ));
-            out.push('\n');
+            let refresh = format_age(row.refresh_age_sec);
+            table.add_row(vec![
+                Cell::new(marker),
+                Cell::new(alias),
+                Cell::new(email),
+                Cell::new(path),
+                Cell::new(prim),
+                Cell::new(week),
+                Cell::new(row.usage_left),
+                Cell::new(refresh),
+                Cell::new(score),
+                Cell::new(row.restart_count),
+                Cell::new(row.active_turns),
+                Cell::new(&row.health),
+                Cell::new(&row.reason),
+            ]);
         } else {
-            out.push_str(&format!(
-                "{:<1} {:<alias_w$}  {:<email_w$}  {:<path_w$}  {:>6} {:>6} {:>6} {:>6} {:>8} {:>7} {:<10}  {}",
-                marker,
-                alias,
-                email,
-                path,
-                "-",
-                "-",
-                "-",
-                "-",
-                "-",
-                "-",
-                "unknown",
-                "missing status",
-                alias_w = alias_w,
-                email_w = email_w,
-                path_w = path_w
-            ));
-            out.push('\n');
+            table.add_row(vec![
+                Cell::new(marker),
+                Cell::new(alias),
+                Cell::new(email),
+                Cell::new(path),
+                Cell::new("-"),
+                Cell::new("-"),
+                Cell::new("-"),
+                Cell::new("-"),
+                Cell::new("-"),
+                Cell::new("-"),
+                Cell::new("-"),
+                Cell::new("unknown"),
+                Cell::new("missing status"),
+            ]);
         }
     }
+
+    let mut out = format!("{}\n", table);
     if let Some(sel) = selected {
         out.push_str(&format!("selected session: {}\n", sel));
     } else {
@@ -1235,3 +1213,18 @@ mod tests {
         assert!(super::parse_cli(&args).is_err());
     }
 }
+    fn format_age(age_sec: Option<i64>) -> String {
+        let Some(sec) = age_sec else {
+            return "-".to_string();
+        };
+        if sec < 60 {
+            return format!("{}s", sec);
+        }
+        if sec < 3600 {
+            return format!("{}m", sec / 60);
+        }
+        if sec < 86_400 {
+            return format!("{}h", sec / 3600);
+        }
+        format!("{}d", sec / 86_400)
+    }

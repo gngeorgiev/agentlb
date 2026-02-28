@@ -197,11 +197,11 @@ fn new_uses_status_scoring_and_fallback_uses_existing_session() -> Result<(), Bo
         .args(["new", "--cmd", "codex run"])
         .output()?;
     assert!(out.status.success());
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("ALIAS"));
-    assert!(stderr.contains("EMAIL"));
-    assert!(stderr.contains("PATH"));
-    assert!(stderr.contains("selected session: b"));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("ALIAS"));
+    assert!(stdout.contains("EMAIL"));
+    assert!(stdout.contains("PATH"));
+    assert!(stdout.contains("selected session: b"));
 
     let ran = fs::read_to_string(&run_log)?;
     assert!(ran.trim().ends_with("/.agentlb/sessions/b"));
