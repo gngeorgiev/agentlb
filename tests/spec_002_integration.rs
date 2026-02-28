@@ -201,7 +201,7 @@ fn new_uses_status_scoring_and_fallback_uses_existing_session() -> Result<(), Bo
     assert!(stdout.contains("ALIAS"));
     assert!(stdout.contains("EMAIL"));
     assert!(stdout.contains("PATH"));
-    assert!(stdout.contains("selected session: b"));
+    assert!(!stdout.contains("selected session:"));
 
     let ran = fs::read_to_string(&run_log)?;
     assert!(ran.trim().ends_with("/.agentlb/sessions/b"));

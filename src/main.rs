@@ -666,7 +666,13 @@ fn run_new_with_status_pick(
     let scoring_cfg = status::ScoringConfig::from(&cfg.sessions);
     let winner = status::pick_best_session_with_retry_and_config(st, 3000, &scoring_cfg);
     if let Ok(sf) = status::load_status(st) {
-        let report = render_unified_status_table(st, &sf, &scoring_cfg, winner.as_deref());
+        let report = render_unified_status_table(
+            st,
+            &sf,
+            &scoring_cfg,
+            winner.as_deref(),
+            false,
+        );
         print!("{}", report);
     }
     if let Some(winner) = winner {
@@ -740,6 +746,7 @@ fn render_unified_status_table(
     status_file: &status::StatusFile,
     scoring_cfg: &status::ScoringConfig,
     selected: Option<&str>,
+    include_selected_footer: bool,
 ) -> String {
     let rows = status::score_rows_with_config(status_file, chrono::Utc::now(), scoring_cfg);
     use std::collections::{BTreeMap, BTreeSet};
@@ -846,10 +853,12 @@ fn render_unified_status_table(
     }
 
     let mut out = format!("{}\n", table);
-    if let Some(sel) = selected {
-        out.push_str(&format!("selected session: {}\n", sel));
-    } else {
-        out.push_str("selected session: <none>\n");
+    if include_selected_footer {
+        if let Some(sel) = selected {
+            out.push_str(&format!("selected session: {}\n", sel));
+        } else {
+            out.push_str("selected session: <none>\n");
+        }
     }
     out
 }
@@ -860,7 +869,7 @@ fn print_unified_status_table(
     scoring_cfg: &status::ScoringConfig,
     selected: Option<&str>,
 ) {
-    let out = render_unified_status_table(st, status_file, scoring_cfg, selected);
+    let out = render_unified_status_table(st, status_file, scoring_cfg, selected, true);
     print!("{}", out);
 }
 
