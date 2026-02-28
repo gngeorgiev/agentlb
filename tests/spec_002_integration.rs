@@ -182,7 +182,7 @@ fn new_uses_status_scoring_and_fallback_creates_session() -> Result<(), Box<dyn 
     fs::create_dir_all(home.path().join(".agentlb"))?;
     fs::write(home.path().join(".agentlb/status.json"), status_json)?;
 
-    let status = Command::new(env!("CARGO_BIN_EXE_agentlb"))
+    let out = Command::new(env!("CARGO_BIN_EXE_agentlb"))
         .env("HOME", home.path())
         .env(
             "PATH",
@@ -195,8 +195,11 @@ fn new_uses_status_scoring_and_fallback_creates_session() -> Result<(), Box<dyn 
         .env("AGENTLB_SUPERVISOR_DISABLED", "1")
         .env("AGENTLB_RECORD_RUN", &run_log)
         .args(["new", "--cmd", "codex run"])
-        .status()?;
-    assert!(status.success());
+        .output()?;
+    assert!(out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("session selection report:"));
+    assert!(stderr.contains("selected session: b"));
 
     let ran = fs::read_to_string(&run_log)?;
     assert!(ran.trim().ends_with("/.agentlb/sessions/b"));

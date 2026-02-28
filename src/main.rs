@@ -497,7 +497,11 @@ fn run_new_with_status_pick(
     st: &state::Store,
 ) -> i32 {
     let scoring_cfg = status::ScoringConfig::from(&cfg.sessions);
-    if let Some(winner) = status::pick_best_session_with_retry_and_config(st, 3000, &scoring_cfg) {
+    let winner = status::pick_best_session_with_retry_and_config(st, 3000, &scoring_cfg);
+    if let Ok(sf) = status::load_status(st) {
+        print_selection_report(&sf, &scoring_cfg, winner.as_deref());
+    }
+    if let Some(winner) = winner {
         let _lock = match st.lock() {
             Ok(l) => l,
             Err(err) => {
@@ -561,6 +565,56 @@ fn run_new_with_status_pick(
     };
     let alias = next_auto_alias(&aliases);
     run_new_alias(&alias, run_cmd, login_cmd, passthrough, cfg, st)
+}
+
+fn print_selection_report(
+    status_file: &status::StatusFile,
+    scoring_cfg: &status::ScoringConfig,
+    selected: Option<&str>,
+) {
+    let rows = status::score_rows_with_config(status_file, chrono::Utc::now(), scoring_cfg);
+    eprintln!("session selection report:");
+    eprintln!(
+        "{:<1} {:<12} {:>6} {:>6} {:>6} {:>6} {:>8} {:>7} {:<10}  {}",
+        " ", "ALIAS", "PRIM", "WEEK", "USAGE", "SCORE", "RESTART", "ACTIVE", "HEALTH", "REASON"
+    );
+    for row in rows {
+        let marker = if selected == Some(row.alias.as_str()) {
+            "*"
+        } else {
+            " "
+        };
+        let prim = row
+            .primary_left
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "-".to_string());
+        let week = row
+            .secondary_left
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "-".to_string());
+        let score = row
+            .score
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "-".to_string());
+        eprintln!(
+            "{:<1} {:<12} {:>6} {:>6} {:>6} {:>6} {:>8} {:>7} {:<10}  {}",
+            marker,
+            row.alias,
+            prim,
+            week,
+            row.usage_left,
+            score,
+            row.restart_count,
+            row.active_turns,
+            row.health,
+            row.reason
+        );
+    }
+    if let Some(sel) = selected {
+        eprintln!("selected session: {}", sel);
+    } else {
+        eprintln!("selected session: <none>");
+    }
 }
 
 fn next_auto_alias(existing: &[String]) -> String {

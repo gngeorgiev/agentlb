@@ -186,26 +186,75 @@ struct Candidate {
     last_selected_at: Option<DateTime<Utc>>,
 }
 
-fn to_candidate(
+#[derive(Debug, Clone)]
+pub struct SessionScoreRow {
+    pub alias: String,
+    pub health: String,
+    pub primary_left: Option<i64>,
+    pub secondary_left: Option<i64>,
+    pub usage_left: i64,
+    pub active_turns: i64,
+    pub restart_count: i64,
+    pub score: Option<i64>,
+    pub reason: String,
+}
+
+fn score_row(
     alias: &str,
     sess: &SessionStatus,
     now: DateTime<Utc>,
     cfg: &ScoringConfig,
-) -> Option<Candidate> {
-    if sess.health != "healthy" {
-        return None;
-    }
-
-    let last_update = parse_ts(&sess.last_rate_limit_update_at)?;
-    let age = now.signed_duration_since(last_update).num_seconds();
-    if age > cfg.stale_sec {
-        return None;
-    }
-
+) -> SessionScoreRow {
+    let primary_left = window_left(&sess.rate_limits.primary);
+    let secondary_left = window_left(&sess.rate_limits.secondary);
     let usage_left = compute_usage_left(sess, cfg).clamp(0, 100);
     let active_turns = sess.activity.active_turns.max(0);
-    let restart_penalty = (sess.app_server.restart_count.max(0) * cfg.restart_penalty_per_restart)
-        .min(cfg.restart_penalty_cap);
+    let restart_count = sess.app_server.restart_count.max(0);
+
+    if sess.health != "healthy" {
+        return SessionScoreRow {
+            alias: alias.to_string(),
+            health: sess.health.clone(),
+            primary_left,
+            secondary_left,
+            usage_left,
+            active_turns,
+            restart_count,
+            score: None,
+            reason: "unhealthy".to_string(),
+        };
+    }
+
+    let Some(last_update) = parse_ts(&sess.last_rate_limit_update_at) else {
+        return SessionScoreRow {
+            alias: alias.to_string(),
+            health: sess.health.clone(),
+            primary_left,
+            secondary_left,
+            usage_left,
+            active_turns,
+            restart_count,
+            score: None,
+            reason: "missing lastRateLimitUpdateAt".to_string(),
+        };
+    };
+    let age = now.signed_duration_since(last_update).num_seconds();
+    if age > cfg.stale_sec {
+        return SessionScoreRow {
+            alias: alias.to_string(),
+            health: sess.health.clone(),
+            primary_left,
+            secondary_left,
+            usage_left,
+            active_turns,
+            restart_count,
+            score: None,
+            reason: format!("stale ({}s>{}s)", age, cfg.stale_sec),
+        };
+    }
+
+    let restart_penalty =
+        (restart_count * cfg.restart_penalty_per_restart).min(cfg.restart_penalty_cap);
     let staleness_penalty = if age > 0 {
         (age * cfg.staleness_penalty_max / cfg.stale_sec).clamp(0, cfg.staleness_penalty_max)
     } else {
@@ -217,11 +266,32 @@ fn to_candidate(
     score -= restart_penalty;
     score -= staleness_penalty;
 
+    SessionScoreRow {
+        alias: alias.to_string(),
+        health: sess.health.clone(),
+        primary_left,
+        secondary_left,
+        usage_left,
+        active_turns,
+        restart_count,
+        score: Some(score),
+        reason: "eligible".to_string(),
+    }
+}
+
+fn to_candidate(
+    alias: &str,
+    sess: &SessionStatus,
+    now: DateTime<Utc>,
+    cfg: &ScoringConfig,
+) -> Option<Candidate> {
+    let row = score_row(alias, sess, now, cfg);
+    let score = row.score?;
     Some(Candidate {
         alias: alias.to_string(),
         score,
-        usage_left,
-        active_turns,
+        usage_left: row.usage_left,
+        active_turns: row.active_turns,
         last_selected_at: parse_ts(&sess.last_selected_at),
     })
 }
@@ -266,6 +336,20 @@ pub fn pick_best_session_with_config(
     });
 
     candidates.first().map(|c| c.alias.clone())
+}
+
+pub fn score_rows_with_config(
+    status: &StatusFile,
+    now: DateTime<Utc>,
+    cfg: &ScoringConfig,
+) -> Vec<SessionScoreRow> {
+    let mut rows: Vec<SessionScoreRow> = status
+        .sessions
+        .iter()
+        .map(|(alias, sess)| score_row(alias, sess, now, cfg))
+        .collect();
+    rows.sort_by(|a, b| a.alias.cmp(&b.alias));
+    rows
 }
 
 pub fn pick_best_session_with_retry_and_config(
