@@ -558,7 +558,8 @@ fn run_new_with_status_pick(
     let scoring_cfg = status::ScoringConfig::from(&cfg.sessions);
     let winner = status::pick_best_session_with_retry_and_config(st, 3000, &scoring_cfg);
     if let Ok(sf) = status::load_status(st) {
-        print_selection_report(&sf, &scoring_cfg, winner.as_deref());
+        let report = render_unified_status_table(st, &sf, &scoring_cfg, winner.as_deref());
+        eprint!("{}", report);
     }
     if let Some(winner) = winner {
         let winner_exists = {
@@ -623,65 +624,16 @@ fn run_new_with_status_pick(
     run_auto_pick(run_cmd, passthrough, cfg, st, "round_robin")
 }
 
-fn print_selection_report(
-    status_file: &status::StatusFile,
-    scoring_cfg: &status::ScoringConfig,
-    selected: Option<&str>,
-) {
-    let rows = status::score_rows_with_config(status_file, chrono::Utc::now(), scoring_cfg);
-    eprintln!("session selection report:");
-    eprintln!(
-        "{:<1} {:<12} {:>6} {:>6} {:>6} {:>6} {:>8} {:>7} {:<10}  {}",
-        " ", "ALIAS", "PRIM", "WEEK", "USAGE", "SCORE", "RESTART", "ACTIVE", "HEALTH", "REASON"
-    );
-    for row in rows {
-        let marker = if selected == Some(row.alias.as_str()) {
-            "*"
-        } else {
-            " "
-        };
-        let prim = row
-            .primary_left
-            .map(|v| v.to_string())
-            .unwrap_or_else(|| "-".to_string());
-        let week = row
-            .secondary_left
-            .map(|v| v.to_string())
-            .unwrap_or_else(|| "-".to_string());
-        let score = row
-            .score
-            .map(|v| v.to_string())
-            .unwrap_or_else(|| "-".to_string());
-        eprintln!(
-            "{:<1} {:<12} {:>6} {:>6} {:>6} {:>6} {:>8} {:>7} {:<10}  {}",
-            marker,
-            row.alias,
-            prim,
-            week,
-            row.usage_left,
-            score,
-            row.restart_count,
-            row.active_turns,
-            row.health,
-            row.reason
-        );
-    }
-    if let Some(sel) = selected {
-        eprintln!("selected session: {}", sel);
-    } else {
-        eprintln!("selected session: <none>");
-    }
-}
-
-fn print_unified_status_table(
+fn render_unified_status_table(
     st: &state::Store,
     status_file: &status::StatusFile,
     scoring_cfg: &status::ScoringConfig,
     selected: Option<&str>,
-) {
+) -> String {
+    let rows = status::score_rows_with_config(status_file, chrono::Utc::now(), scoring_cfg);
     use std::collections::{BTreeMap, BTreeSet};
 
-    let scored = status::score_rows_with_config(status_file, chrono::Utc::now(), scoring_cfg);
+    let scored = rows;
     let mut score_by_alias: BTreeMap<String, status::SessionScoreRow> = BTreeMap::new();
     for row in scored {
         score_by_alias.insert(row.alias.clone(), row);
@@ -722,7 +674,8 @@ fn print_unified_status_table(
         .unwrap_or(4)
         .max("PATH".len());
 
-    println!(
+    let mut out = String::new();
+    out.push_str(&format!(
         "{:<1} {:<alias_w$}  {:<email_w$}  {:<path_w$}  {:>6} {:>6} {:>6} {:>6} {:>8} {:>7} {:<10}  REASON",
         " ",
         "ALIAS",
@@ -738,7 +691,8 @@ fn print_unified_status_table(
         alias_w = alias_w,
         email_w = email_w,
         path_w = path_w
-    );
+    ));
+    out.push('\n');
 
     for alias in aliases {
         let marker = if selected == Some(alias.as_str()) {
@@ -763,7 +717,7 @@ fn print_unified_status_table(
                 .score
                 .map(|v| v.to_string())
                 .unwrap_or_else(|| "-".to_string());
-            println!(
+            out.push_str(&format!(
                 "{:<1} {:<alias_w$}  {:<email_w$}  {:<path_w$}  {:>6} {:>6} {:>6} {:>6} {:>8} {:>7} {:<10}  {}",
                 marker,
                 alias,
@@ -780,9 +734,10 @@ fn print_unified_status_table(
                 alias_w = alias_w,
                 email_w = email_w,
                 path_w = path_w
-            );
+            ));
+            out.push('\n');
         } else {
-            println!(
+            out.push_str(&format!(
                 "{:<1} {:<alias_w$}  {:<email_w$}  {:<path_w$}  {:>6} {:>6} {:>6} {:>6} {:>8} {:>7} {:<10}  {}",
                 marker,
                 alias,
@@ -799,14 +754,26 @@ fn print_unified_status_table(
                 alias_w = alias_w,
                 email_w = email_w,
                 path_w = path_w
-            );
+            ));
+            out.push('\n');
         }
     }
     if let Some(sel) = selected {
-        println!("selected session: {}", sel);
+        out.push_str(&format!("selected session: {}\n", sel));
     } else {
-        println!("selected session: <none>");
+        out.push_str("selected session: <none>\n");
     }
+    out
+}
+
+fn print_unified_status_table(
+    st: &state::Store,
+    status_file: &status::StatusFile,
+    scoring_cfg: &status::ScoringConfig,
+    selected: Option<&str>,
+) {
+    let out = render_unified_status_table(st, status_file, scoring_cfg, selected);
+    print!("{}", out);
 }
 
 fn run_auto_pick(

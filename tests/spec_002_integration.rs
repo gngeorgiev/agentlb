@@ -198,7 +198,9 @@ fn new_uses_status_scoring_and_fallback_uses_existing_session() -> Result<(), Bo
         .output()?;
     assert!(out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("session selection report:"));
+    assert!(stderr.contains("ALIAS"));
+    assert!(stderr.contains("EMAIL"));
+    assert!(stderr.contains("PATH"));
     assert!(stderr.contains("selected session: b"));
 
     let ran = fs::read_to_string(&run_log)?;
