@@ -334,28 +334,71 @@ fn run_supervisor_stop(st: &state::Store) -> i32 {
 }
 
 fn print_supervisor_help() {
+    println!("agentlb supervisor");
+    println!();
+    println!("Manage the background supervisor process.");
+    println!();
     println!("usage:");
     println!("  agentlb supervisor");
     println!("  agentlb supervisor start --background");
     println!("  agentlb supervisor restart");
     println!("  agentlb supervisor stop");
+    println!("  agentlb supervisor daemon");
+    println!();
+    println!("commands:");
+    println!("  start --background   Start supervisor in background if not running");
+    println!("  restart              Restart supervisor process");
+    println!("  stop                 Stop supervisor process if running");
+    println!("  daemon               Run supervisor foreground daemon loop");
+    println!();
+    println!("examples:");
+    println!("  agentlb supervisor");
+    println!("  agentlb supervisor start --background");
+    println!("  agentlb supervisor restart");
 }
 
 fn print_help() {
+    println!("agentlb");
+    println!();
+    println!("Run Codex with isolated per-session CODEX_HOME and usage-aware session selection.");
+    println!();
     println!("usage:");
     println!("  agentlb [--print-command] [--cmd <command>] [-- <args...>]");
-    println!("  agentlb status");
-    println!(
-        "  agentlb new [<alias-or-email>] [--print-command] [--cmd <command>] [--login-cmd <command>] [-- <args...>]"
-    );
-    println!("  agentlb rm <alias-or-email>");
+    println!("  agentlb new [<alias-or-email>] [--print-command] [--cmd <command>] [--login-cmd <command>] [-- <args...>]");
     println!("  agentlb rr [--print-command] [--cmd <command>] [-- <args...>]");
     println!("  agentlb last [--print-command] [--cmd <command>] [-- <args...>]");
+    println!("  agentlb status");
+    println!("  agentlb rm <alias-or-email>");
     println!("  agentlb supervisor");
-    println!("  agentlb supervisor start --background");
-    println!("  agentlb supervisor restart");
-    println!("  agentlb supervisor stop");
     println!("  agentlb config init");
+    println!();
+    println!("commands:");
+    println!("  (default)            Run using round-robin over managed sessions");
+    println!("  new [target]         Use named/email session or auto-pick from status scoring");
+    println!("  rr                   Force round-robin pick");
+    println!("  last                 Reuse last selected session");
+    println!("  status               Show session table (identity + usage + score)");
+    println!("  rm <target>          Remove a session by alias or email");
+    println!("  supervisor           Supervisor subcommands/help");
+    println!("  config init          Write default config file");
+    println!();
+    println!("global flags:");
+    println!("  --cmd <command>         Override run command for this invocation");
+    println!("  --login-cmd <command>   Override login command (new alias creation only)");
+    println!("  --print-command         Print resolved shell command and exit");
+    println!("  -- <args...>            Pass remaining args to run command");
+    println!("  -h, --help              Show help");
+    println!();
+    println!("examples:");
+    println!("  agentlb");
+    println!("  agentlb new work");
+    println!("  agentlb new me@example.com");
+    println!("  agentlb new");
+    println!("  agentlb --cmd \"codex --model gpt-5.1-codex-mini\"");
+    println!("  agentlb new work -- --search");
+    println!("  agentlb rr --print-command -- --search");
+    println!("  agentlb status");
+    println!("  agentlb supervisor start --background");
 }
 
 fn run_rm(target: &str, st: &state::Store) -> i32 {
