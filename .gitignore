@@ -1,0 +1,19 @@
+/target/
+
+# IDE/editor metadata
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Local env/config
+.env
+.env.*
+
+# Logs
+*.log
