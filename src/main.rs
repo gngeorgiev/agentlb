@@ -23,6 +23,7 @@ struct CliArgs {
     alias: String,
     cmd: String,
     login_cmd: String,
+    print_command: bool,
     supervisor_background: bool,
     passthrough: Vec<String>,
 }
@@ -119,14 +120,31 @@ fn run(argv: Vec<String>) -> i32 {
             &args.alias,
             &run_cmd,
             &login_cmd,
+            args.print_command,
             &args.passthrough,
             &cfg,
             &st,
         ),
-        ("new", true) => run_new_with_status_pick(&run_cmd, &args.passthrough, &cfg, &st),
-        ("rr", _) => run_auto_pick(&run_cmd, &args.passthrough, &cfg, &st, "round_robin"),
-        ("last", _) => run_last(&run_cmd, &args.passthrough, &cfg, &st),
-        ("root", _) => run_auto_pick(&run_cmd, &args.passthrough, &cfg, &st, "round_robin"),
+        ("new", true) => {
+            run_new_with_status_pick(&run_cmd, args.print_command, &args.passthrough, &cfg, &st)
+        }
+        ("rr", _) => run_auto_pick(
+            &run_cmd,
+            args.print_command,
+            &args.passthrough,
+            &cfg,
+            &st,
+            "round_robin",
+        ),
+        ("last", _) => run_last(&run_cmd, args.print_command, &args.passthrough, &cfg, &st),
+        ("root", _) => run_auto_pick(
+            &run_cmd,
+            args.print_command,
+            &args.passthrough,
+            &cfg,
+            &st,
+            "round_robin",
+        ),
         _ => {
             eprintln!("invalid mode");
             EXIT_USAGE
@@ -248,14 +266,14 @@ fn print_supervisor_help() {
 
 fn print_help() {
     println!("usage:");
-    println!("  agentlb [--cmd <command>] [-- <args...>]");
+    println!("  agentlb [--print-command] [--cmd <command>] [-- <args...>]");
     println!("  agentlb status");
     println!(
-        "  agentlb new [<alias-or-email>] [--cmd <command>] [--login-cmd <command>] [-- <args...>]"
+        "  agentlb new [<alias-or-email>] [--print-command] [--cmd <command>] [--login-cmd <command>] [-- <args...>]"
     );
     println!("  agentlb rm <alias-or-email>");
-    println!("  agentlb rr [--cmd <command>] [-- <args...>]");
-    println!("  agentlb last [--cmd <command>] [-- <args...>]");
+    println!("  agentlb rr [--print-command] [--cmd <command>] [-- <args...>]");
+    println!("  agentlb last [--print-command] [--cmd <command>] [-- <args...>]");
     println!("  agentlb supervisor");
     println!("  agentlb supervisor start --background");
     println!("  agentlb supervisor restart");
@@ -425,6 +443,7 @@ fn run_new_alias(
     target: &str,
     run_cmd: &str,
     login_cmd: &str,
+    print_command: bool,
     passthrough: &[String],
     cfg: &config::Config,
     st: &state::Store,
@@ -437,13 +456,14 @@ fn run_new_alias(
         }
     };
 
-    run_new_alias_resolved(&alias, run_cmd, login_cmd, passthrough, cfg, st)
+    run_new_alias_resolved(&alias, run_cmd, login_cmd, print_command, passthrough, cfg, st)
 }
 
 fn run_new_alias_resolved(
     alias: &str,
     run_cmd: &str,
     login_cmd: &str,
+    print_command: bool,
     passthrough: &[String],
     cfg: &config::Config,
     st: &state::Store,
@@ -496,9 +516,13 @@ fn run_new_alias_resolved(
         created
     };
 
-    if created && let Err(err) = session::run_login(login_cmd, alias, st) {
-        eprintln!("{}", err);
-        return EXIT_LOGIN_FAILED;
+    if !print_command {
+        if created && let Err(err) = session::run_login(login_cmd, alias, st) {
+            eprintln!("{}", err);
+            return EXIT_LOGIN_FAILED;
+        }
+    } else {
+        return print_shell_command(run_cmd, passthrough, alias, st);
     }
 
     match session::run_command(run_cmd, passthrough, alias, st) {
@@ -552,6 +576,7 @@ fn resolve_alias_target(target: &str, st: &state::Store) -> io::Result<String> {
 
 fn run_new_with_status_pick(
     run_cmd: &str,
+    print_command: bool,
     passthrough: &[String],
     cfg: &config::Config,
     st: &state::Store,
@@ -606,6 +631,9 @@ fn run_new_with_status_pick(
 
         if winner_exists {
             status::mark_selected(st, &winner);
+            if print_command {
+                return print_shell_command(run_cmd, passthrough, &winner, st);
+            }
             return match session::run_command(run_cmd, passthrough, &winner, st) {
                 Ok(code) => code,
                 Err(err) => {
@@ -619,10 +647,10 @@ fn run_new_with_status_pick(
             "selected session {:?} not found; falling back to managed aliases",
             winner
         );
-        return run_auto_pick(run_cmd, passthrough, cfg, st, "round_robin");
+        return run_auto_pick(run_cmd, print_command, passthrough, cfg, st, "round_robin");
     }
 
-    run_auto_pick(run_cmd, passthrough, cfg, st, "round_robin")
+    run_auto_pick(run_cmd, print_command, passthrough, cfg, st, "round_robin")
 }
 
 fn render_unified_status_table(
@@ -756,6 +784,7 @@ fn print_unified_status_table(
 
 fn run_auto_pick(
     run_cmd: &str,
+    print_command: bool,
     passthrough: &[String],
     cfg: &config::Config,
     st: &state::Store,
@@ -819,6 +848,10 @@ fn run_auto_pick(
         winner
     };
 
+    if print_command {
+        return print_shell_command(run_cmd, passthrough, &winner, st);
+    }
+
     match session::run_command(run_cmd, passthrough, &winner, st) {
         Ok(code) => code,
         Err(err) => {
@@ -858,7 +891,13 @@ fn pick_alias(
     }
 }
 
-fn run_last(run_cmd: &str, passthrough: &[String], cfg: &config::Config, st: &state::Store) -> i32 {
+fn run_last(
+    run_cmd: &str,
+    print_command: bool,
+    passthrough: &[String],
+    cfg: &config::Config,
+    st: &state::Store,
+) -> i32 {
     let alias = {
         let _lock = match st.lock() {
             Ok(l) => l,
@@ -915,6 +954,10 @@ fn run_last(run_cmd: &str, passthrough: &[String], cfg: &config::Config, st: &st
         g.last_alias
     };
 
+    if print_command {
+        return print_shell_command(run_cmd, passthrough, &alias, st);
+    }
+
     match session::run_command(run_cmd, passthrough, &alias, st) {
         Ok(code) => code,
         Err(err) => {
@@ -943,6 +986,19 @@ fn resolve_login_command(a: &CliArgs, cfg: &config::Config, run_cmd: &str) -> St
     match config::split_command(run_cmd) {
         Ok((bin, _)) => format!("{} login", bin),
         Err(_) => "codex login".to_string(),
+    }
+}
+
+fn print_shell_command(run_cmd: &str, passthrough: &[String], alias: &str, st: &state::Store) -> i32 {
+    match session::render_shell_command(run_cmd, passthrough, alias, st) {
+        Ok(cmd) => {
+            println!("{}", cmd);
+            EXIT_OK
+        }
+        Err(err) => {
+            eprintln!("{}", err);
+            EXIT_GENERIC
+        }
     }
 }
 
@@ -1092,6 +1148,11 @@ fn parse_cli(args: &[String]) -> io::Result<CliArgs> {
                 i += 1;
                 continue;
             }
+            "--print-command" => {
+                out.print_command = true;
+                i += 1;
+                continue;
+            }
             "--help" | "-h" => {
                 if out.mode == "supervisor_help" {
                     out.mode = "supervisor_help".to_string();
@@ -1138,6 +1199,13 @@ fn parse_cli(args: &[String]) -> io::Result<CliArgs> {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "usage: agentlb rm <alias-or-email>",
+        ));
+    }
+
+    if out.print_command && !matches!(out.mode.as_str(), "root" | "new" | "rr" | "last") {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--print-command is only supported for session run commands",
         ));
     }
 
@@ -1205,6 +1273,20 @@ mod tests {
         let args = vec!["status".to_string()];
         let parsed = super::parse_cli(&args).expect("parse should succeed");
         assert_eq!(parsed.mode, "status");
+    }
+
+    #[test]
+    fn parse_cli_accepts_print_command_flag() {
+        let args = vec!["new".to_string(), "--print-command".to_string()];
+        let parsed = super::parse_cli(&args).expect("parse should succeed");
+        assert_eq!(parsed.mode, "new");
+        assert!(parsed.print_command);
+    }
+
+    #[test]
+    fn parse_cli_rejects_print_command_for_status() {
+        let args = vec!["status".to_string(), "--print-command".to_string()];
+        assert!(super::parse_cli(&args).is_err());
     }
 
     #[test]

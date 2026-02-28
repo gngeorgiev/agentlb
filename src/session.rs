@@ -63,6 +63,37 @@ pub fn run_command(
     Ok(status.code().unwrap_or(1))
 }
 
+pub fn render_shell_command(
+    run_cmd: &str,
+    passthrough: &[String],
+    alias: &str,
+    st: &crate::state::Store,
+) -> io::Result<String> {
+    let (bin, mut args) = crate::config::split_command(run_cmd)?;
+    args.extend_from_slice(passthrough);
+    let mut parts = Vec::with_capacity(args.len() + 2);
+    let codex_home = st.session_dir(alias).display().to_string();
+    parts.push(format!("CODEX_HOME={}", shell_quote(&codex_home)));
+    parts.push(shell_quote(&bin));
+    for arg in args {
+        parts.push(shell_quote(&arg));
+    }
+    Ok(parts.join(" "))
+}
+
+fn shell_quote(value: &str) -> String {
+    if value.is_empty() {
+        return "''".to_string();
+    }
+    if value
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b"-_./:=+".contains(&b))
+    {
+        return value.to_string();
+    }
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
 fn command_with_codex_home(
     bin: &Path,
     args: &[String],
@@ -93,5 +124,12 @@ mod tests {
             let err = super::validate_alias(alias, pattern);
             assert_eq!(err.is_ok(), ok, "alias={}", alias);
         }
+    }
+
+    #[test]
+    fn shell_quote_escapes_single_quotes() {
+        assert_eq!(super::shell_quote("abc"), "abc");
+        assert_eq!(super::shell_quote("a b"), "'a b'");
+        assert_eq!(super::shell_quote("a'b"), "'a'\"'\"'b'");
     }
 }

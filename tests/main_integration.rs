@@ -311,6 +311,44 @@ fn new_accepts_email_target_and_resolves_to_alias() -> Result<(), Box<dyn Error>
 }
 
 #[test]
+fn print_command_outputs_shell_command_without_running_processes() -> Result<(), Box<dyn Error>> {
+    let home = TempDir::new()?;
+    let fake = write_fake_codex(&home)?;
+    let login_log = home.path().join("login.log");
+    let run_log = home.path().join("run.log");
+
+    let out = Command::new(env!("CARGO_BIN_EXE_agentlb"))
+        .env("HOME", home.path())
+        .env("AGENTLB_SUPERVISOR_DISABLED", "1")
+        .env("AGENTLB_RECORD_LOGIN", &login_log)
+        .env("AGENTLB_RECORD_RUN", &run_log)
+        .args([
+            "new",
+            "a1",
+            "--print-command",
+            "--login-cmd",
+            &format!("{} login", fake.display()),
+            "--cmd",
+            &format!("{} run", fake.display()),
+            "--",
+            "--search",
+        ])
+        .output()?;
+    assert!(out.status.success());
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("CODEX_HOME="));
+    assert!(stdout.contains("/.agentlb/sessions/a1"));
+    assert!(stdout.contains("fakecodex"));
+    assert!(stdout.contains("run"));
+    assert!(stdout.contains("--search"));
+
+    assert!(!login_log.exists());
+    assert!(!run_log.exists());
+    Ok(())
+}
+
+#[test]
 fn rm_removes_session_and_cleans_state_and_status() -> Result<(), Box<dyn Error>> {
     let home = TempDir::new()?;
     let sess = home.path().join(".agentlb/sessions/a");

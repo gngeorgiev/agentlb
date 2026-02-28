@@ -30,6 +30,7 @@ agentlb supervisor start --background
 
 - `agentlb`
   - Round-robin across existing aliases.
+  - Use `--print-command` to print the resolved shell command (with `CODEX_HOME`) instead of executing it.
 - `agentlb status`
   - Print one combined table with:
     - alias
@@ -79,6 +80,7 @@ At the end, `selected session: ...` shows the final winner (or `<none>` when no 
   - Create alias if missing.
   - Run login once on first creation.
   - Run command in that alias.
+  - Use `--print-command` to print the resolved command and skip login/run execution.
 - `agentlb new <email>`
   - Resolve email to an existing session alias and run that session.
   - Use `agentlb status` to see available alias/email/path mappings and selection status.
@@ -93,10 +95,13 @@ At the end, `selected session: ...` shows the final winner (or `<none>` when no 
 - `agentlb new`
   - Pick best session using `~/.agentlb/status.json` (usage-aware selection).
   - If status is unusable after retry, falls back to existing managed aliases.
+  - Use `--print-command` to print the resolved command for the selected session.
 - `agentlb rr`
   - Force round-robin across aliases.
+  - Use `--print-command` to print the resolved command for the selected alias.
 - `agentlb last`
   - Run the most recently selected alias.
+  - Use `--print-command` to print the resolved command for `last_alias`.
 - `agentlb supervisor`
   - Print supervisor command help.
 - `agentlb supervisor start --background`
@@ -184,6 +189,7 @@ Supervisor responsibilities:
 
 Supported on `agentlb`, `agentlb new`, `agentlb new <alias-or-email>`, `agentlb rr`, and `agentlb last`:
 
+- `--print-command` print the final shell command (including `CODEX_HOME=...`) and exit without spawning login/run
 - `--cmd "<command string>"` override run command for this invocation
 - `--login-cmd "<command string>"` override login command (new alias only)
 - `-- <args...>` pass-through args appended to run command
@@ -192,8 +198,11 @@ Examples:
 
 ```bash
 agentlb --cmd "codex --model gpt-5.1-codex-mini"
+agentlb --print-command --cmd "codex --model gpt-5.1-codex-mini"
 agentlb new work -- --search
+agentlb new work --print-command -- --search
 agentlb new gngeorgiev.it@gmail.com -- --search
+agentlb new --print-command -- --help
 agentlb rm work
 agentlb rm gngeorgiev.it@gmail.com
 agentlb new -- --help
