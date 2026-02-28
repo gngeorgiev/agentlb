@@ -142,7 +142,7 @@ fn supervisor_ingests_rate_limits_and_restarts_managed_process() -> Result<(), B
 }
 
 #[test]
-fn new_uses_status_scoring_and_fallback_creates_session() -> Result<(), Box<dyn Error>> {
+fn new_uses_status_scoring_and_fallback_uses_existing_session() -> Result<(), Box<dyn Error>> {
     let home = TempDir::new()?;
     let fake = write_fake_codex(&home)?;
     let run_log = home.path().join("run.log");
@@ -204,9 +204,9 @@ fn new_uses_status_scoring_and_fallback_creates_session() -> Result<(), Box<dyn 
     let ran = fs::read_to_string(&run_log)?;
     assert!(ran.trim().ends_with("/.agentlb/sessions/b"));
 
-    // Corrupt status => fallback creates new auto session.
+    // Corrupt status => fallback uses an existing managed session.
     fs::write(home.path().join(".agentlb/status.json"), "not-json")?;
-    let status = Command::new(env!("CARGO_BIN_EXE_agentlb"))
+    let out = Command::new(env!("CARGO_BIN_EXE_agentlb"))
         .env("HOME", home.path())
         .env(
             "PATH",
@@ -217,10 +217,15 @@ fn new_uses_status_scoring_and_fallback_creates_session() -> Result<(), Box<dyn 
             ),
         )
         .env("AGENTLB_SUPERVISOR_DISABLED", "1")
-        .args(["new", "--cmd", "true", "--login-cmd", "true"])
-        .status()?;
-    assert!(status.success());
-    assert!(home.path().join(".agentlb/sessions/auto1").exists());
+        .env("AGENTLB_RECORD_RUN", &run_log)
+        .args(["new", "--cmd", "codex run"])
+        .output()?;
+    assert!(out.status.success());
+    assert!(!home.path().join(".agentlb/sessions/auto1").exists());
+    let ran = fs::read_to_string(&run_log)?;
+    let runs: Vec<&str> = ran.lines().collect();
+    assert_eq!(runs.len(), 2);
+    assert!(runs[1].ends_with("/.agentlb/sessions/a"));
 
     Ok(())
 }

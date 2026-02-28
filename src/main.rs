@@ -93,6 +93,9 @@ fn run(argv: Vec<String>) -> i32 {
     if args.mode == "status" {
         return run_status(&st);
     }
+    if args.mode == "rm" {
+        return run_rm(&args.alias, &st);
+    }
 
     if let Err(err) = supervisor::ensure_running(&st) {
         eprintln!("{}", err);
@@ -119,9 +122,7 @@ fn run(argv: Vec<String>) -> i32 {
             &cfg,
             &st,
         ),
-        ("new", true) => {
-            run_new_with_status_pick(&run_cmd, &login_cmd, &args.passthrough, &cfg, &st)
-        }
+        ("new", true) => run_new_with_status_pick(&run_cmd, &args.passthrough, &cfg, &st),
         ("rr", _) => run_auto_pick(&run_cmd, &args.passthrough, &cfg, &st, "round_robin"),
         ("last", _) => run_last(&run_cmd, &args.passthrough, &cfg, &st),
         ("root", _) => run_auto_pick(&run_cmd, &args.passthrough, &cfg, &st, "round_robin"),
@@ -251,6 +252,7 @@ fn print_help() {
     println!(
         "  agentlb new [<alias-or-email>] [--cmd <command>] [--login-cmd <command>] [-- <args...>]"
     );
+    println!("  agentlb rm <alias-or-email>");
     println!("  agentlb rr [--cmd <command>] [-- <args...>]");
     println!("  agentlb last [--cmd <command>] [-- <args...>]");
     println!("  agentlb supervisor");
@@ -258,6 +260,71 @@ fn print_help() {
     println!("  agentlb supervisor restart");
     println!("  agentlb supervisor stop");
     println!("  agentlb config init");
+}
+
+fn run_rm(target: &str, st: &state::Store) -> i32 {
+    let alias = match resolve_alias_target(target, st) {
+        Ok(v) => v,
+        Err(err) => {
+            eprintln!("{}", err);
+            return EXIT_USAGE;
+        }
+    };
+
+    let _lock = match st.lock() {
+        Ok(l) => l,
+        Err(err) => {
+            eprintln!("{}", err);
+            return EXIT_GENERIC;
+        }
+    };
+
+    let session_dir = st.session_dir(&alias);
+    if !session_dir.exists() {
+        eprintln!("session {:?} does not exist", alias);
+        return EXIT_USAGE;
+    }
+
+    if let Err(err) = std::fs::remove_dir_all(&session_dir) {
+        eprintln!("{}", err);
+        return EXIT_GENERIC;
+    }
+
+    let ss_path = st.session_state_path(&alias);
+    if let Err(err) = std::fs::remove_file(&ss_path)
+        && err.kind() != io::ErrorKind::NotFound
+    {
+        eprintln!("{}", err);
+        return EXIT_GENERIC;
+    }
+
+    match st.load_global() {
+        Ok(mut g) => {
+            if g.last_alias == alias {
+                g.last_alias.clear();
+                if let Err(err) = st.save_global(&g) {
+                    eprintln!("{}", err);
+                    return EXIT_GENERIC;
+                }
+            }
+        }
+        Err(err) => {
+            eprintln!("{}", err);
+            return EXIT_GENERIC;
+        }
+    }
+
+    if let Ok(mut sf) = status::load_status(st) {
+        sf.sessions.remove(&alias);
+        sf.updated_at = state::now_rfc3339();
+        if let Err(err) = status::save_status(st, &sf) {
+            eprintln!("{}", err);
+            return EXIT_GENERIC;
+        }
+    }
+
+    println!("removed session: {}", alias);
+    EXIT_OK
 }
 
 fn run_status(st: &state::Store) -> i32 {
@@ -458,7 +525,6 @@ fn resolve_alias_target(target: &str, st: &state::Store) -> io::Result<String> {
 
 fn run_new_with_status_pick(
     run_cmd: &str,
-    login_cmd: &str,
     passthrough: &[String],
     cfg: &config::Config,
     st: &state::Store,
@@ -469,69 +535,66 @@ fn run_new_with_status_pick(
         print_selection_report(&sf, &scoring_cfg, winner.as_deref());
     }
     if let Some(winner) = winner {
-        let _lock = match st.lock() {
-            Ok(l) => l,
-            Err(err) => {
-                eprintln!("{}", err);
-                return EXIT_GENERIC;
+        let winner_exists = {
+            let _lock = match st.lock() {
+                Ok(l) => l,
+                Err(err) => {
+                    eprintln!("{}", err);
+                    return EXIT_GENERIC;
+                }
+            };
+
+            let aliases = match st.list_aliases() {
+                Ok(v) => v,
+                Err(err) => {
+                    eprintln!("{}", err);
+                    return EXIT_GENERIC;
+                }
+            };
+            if !aliases.iter().any(|a| a == &winner) {
+                false
+            } else {
+                let mut g = match st.load_global() {
+                    Ok(g) => g,
+                    Err(err) => {
+                        eprintln!("{}", err);
+                        return EXIT_GENERIC;
+                    }
+                };
+                g.last_alias = winner.clone();
+                if let Err(err) = st.save_global(&g) {
+                    eprintln!("{}", err);
+                    return EXIT_GENERIC;
+                }
+                if let Err(err) =
+                    st.record_assignment(&winner, cfg.sessions.assignment_history_window)
+                {
+                    eprintln!("{}", err);
+                    return EXIT_GENERIC;
+                }
+                true
             }
         };
 
-        let aliases = match st.list_aliases() {
-            Ok(v) => v,
-            Err(err) => {
-                eprintln!("{}", err);
-                return EXIT_GENERIC;
-            }
-        };
-        if !aliases.iter().any(|a| a == &winner) {
-            return run_new_alias(
-                &next_auto_alias(&aliases),
-                run_cmd,
-                login_cmd,
-                passthrough,
-                cfg,
-                st,
-            );
+        if winner_exists {
+            status::mark_selected(st, &winner);
+            return match session::run_command(run_cmd, passthrough, &winner, st) {
+                Ok(code) => code,
+                Err(err) => {
+                    eprintln!("{}", err);
+                    EXIT_GENERIC
+                }
+            };
         }
 
-        let mut g = match st.load_global() {
-            Ok(g) => g,
-            Err(err) => {
-                eprintln!("{}", err);
-                return EXIT_GENERIC;
-            }
-        };
-        g.last_alias = winner.clone();
-        if let Err(err) = st.save_global(&g) {
-            eprintln!("{}", err);
-            return EXIT_GENERIC;
-        }
-        if let Err(err) = st.record_assignment(&winner, cfg.sessions.assignment_history_window) {
-            eprintln!("{}", err);
-            return EXIT_GENERIC;
-        }
-
-        status::mark_selected(st, &winner);
-
-        return match session::run_command(run_cmd, passthrough, &winner, st) {
-            Ok(code) => code,
-            Err(err) => {
-                eprintln!("{}", err);
-                EXIT_GENERIC
-            }
-        };
+        eprintln!(
+            "selected session {:?} not found; falling back to managed aliases",
+            winner
+        );
+        return run_auto_pick(run_cmd, passthrough, cfg, st, "round_robin");
     }
 
-    let aliases = match st.list_aliases() {
-        Ok(v) => v,
-        Err(err) => {
-            eprintln!("{}", err);
-            return EXIT_GENERIC;
-        }
-    };
-    let alias = next_auto_alias(&aliases);
-    run_new_alias(&alias, run_cmd, login_cmd, passthrough, cfg, st)
+    run_auto_pick(run_cmd, passthrough, cfg, st, "round_robin")
 }
 
 fn print_selection_report(
@@ -718,16 +781,6 @@ fn print_unified_status_table(
     } else {
         println!("selected session: <none>");
     }
-}
-
-fn next_auto_alias(existing: &[String]) -> String {
-    for i in 1..10_000usize {
-        let candidate = format!("auto{}", i);
-        if !existing.iter().any(|a| a == &candidate) {
-            return candidate;
-        }
-    }
-    format!("auto{}", chrono::Utc::now().timestamp())
 }
 
 fn run_auto_pick(
@@ -950,6 +1003,14 @@ fn parse_cli(args: &[String]) -> io::Result<CliArgs> {
                 }
                 return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid usage"));
             }
+            "rm" => {
+                if out.mode == "root" {
+                    out.mode = "rm".to_string();
+                    i += 1;
+                    continue;
+                }
+                return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid usage"));
+            }
             "status" => {
                 if out.mode == "root" {
                     out.mode = "status".to_string();
@@ -1091,9 +1152,21 @@ fn parse_cli(args: &[String]) -> io::Result<CliArgs> {
             i += 1;
             continue;
         }
+        if out.mode == "rm" && out.alias.is_empty() {
+            out.alias = t.clone();
+            i += 1;
+            continue;
+        }
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("unexpected argument: {}", t),
+        ));
+    }
+
+    if out.mode == "rm" && out.alias.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "usage: agentlb rm <alias-or-email>",
         ));
     }
 
@@ -1161,5 +1234,11 @@ mod tests {
         let args = vec!["status".to_string()];
         let parsed = super::parse_cli(&args).expect("parse should succeed");
         assert_eq!(parsed.mode, "status");
+    }
+
+    #[test]
+    fn parse_cli_rm_requires_target() {
+        let args = vec!["rm".to_string()];
+        assert!(super::parse_cli(&args).is_err());
     }
 }

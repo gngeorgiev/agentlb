@@ -84,9 +84,14 @@ At the end, `selected session: ...` shows the final winner (or `<none>` when no 
   - Use `agentlb status` to see available alias/email/path mappings and selection status.
   - If zero matches: returns a not-found error.
   - If multiple matches: returns an ambiguity error and asks for explicit alias.
+- `agentlb rm <alias-or-email>`
+  - Remove a managed session.
+  - Deletes session directory under `~/.agentlb/sessions/<alias>`.
+  - Removes session entry from `~/.agentlb/state/sessions/<alias>.json` and `~/.agentlb/status.json`.
+  - Clears `last_alias` if it points to the removed session.
 - `agentlb new`
   - Pick best session using `~/.agentlb/status.json` (usage-aware selection).
-  - If status is unusable after retry, creates a new alias (`auto1`, `auto2`, ...).
+  - If status is unusable after retry, falls back to existing managed aliases.
 - `agentlb rr`
   - Force round-robin across aliases.
 - `agentlb last`
@@ -154,7 +159,8 @@ When scores tie:
 If no usable candidate is found:
 
 - retry status reads for up to `3000ms`
-- if still unusable, create a new alias (`autoN`) and run there
+- if still unusable, fall back to existing managed aliases (round-robin)
+- if no managed aliases exist, return an actionable error
 
 ## Supervisor Behavior
 
@@ -187,6 +193,8 @@ Examples:
 agentlb --cmd "codex --model gpt-5.1-codex-mini"
 agentlb new work -- --search
 agentlb new gngeorgiev.it@gmail.com -- --search
+agentlb rm work
+agentlb rm gngeorgiev.it@gmail.com
 agentlb new -- --help
 agentlb rr
 agentlb last -- --search
