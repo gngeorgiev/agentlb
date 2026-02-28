@@ -129,6 +129,7 @@ Supervisor responsibilities:
 - atomically flush `~/.agentlb/status.json`
 - restart crashed app-servers with exponential backoff + jitter
 - run startup + periodic probes for aliases without active managed app-server
+- proactively refresh rate limits before sessions reach stale threshold
 
 ## Flags
 
@@ -313,3 +314,5 @@ cargo test
 - `AGENTLB_PROBE_LIFETIME_SEC`: max probe process lifetime
 - `AGENTLB_STATUS_FLUSH_INTERVAL_SEC`: status flush cadence
 - `AGENTLB_MAX_RESTARTS_5M`: crash-loop guard threshold
+- `AGENTLB_PRE_STALE_REFRESH_SEC`: how early (in seconds before `stale_sec`) supervisor refreshes rate limits proactively
+- `AGENTLB_PRE_STALE_REFRESH_COOLDOWN_SEC`: cooldown between proactive refresh attempts per session

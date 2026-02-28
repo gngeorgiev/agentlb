@@ -139,7 +139,11 @@ impl Store {
                 for entry in entries {
                     let entry = entry?;
                     if entry.file_type()?.is_dir() {
-                        aliases.push(entry.file_name().to_string_lossy().to_string());
+                        let alias = entry.file_name().to_string_lossy().to_string();
+                        if alias.starts_with('.') {
+                            continue;
+                        }
+                        aliases.push(alias);
                     }
                 }
             }

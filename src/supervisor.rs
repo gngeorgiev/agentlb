@@ -3,6 +3,7 @@ use crate::status::{
     Activity, AppServerStatus, DaemonStatus, RateLimits, RateWindow, SessionStatus, StatusFile,
     load_status, save_status,
 };
+use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, VecDeque};
 use std::fs;
@@ -17,6 +18,8 @@ const DEFAULT_PROBE_LIFETIME_SEC: u64 = 10;
 const DEFAULT_STATUS_FLUSH_INTERVAL_SEC: u64 = 2;
 const DEFAULT_DAEMON_START_TIMEOUT_MS: u64 = 3000;
 const DEFAULT_MAX_RESTARTS_5M: usize = 10;
+const DEFAULT_PRE_STALE_REFRESH_SEC: u64 = 60;
+const DEFAULT_PRE_STALE_REFRESH_COOLDOWN_SEC: u64 = 30;
 
 #[cfg(target_family = "unix")]
 fn is_pid_alive(pid: i32) -> bool {
@@ -122,6 +125,7 @@ struct Runtime {
     restart_attempt: usize,
     restart_times_5m: VecDeque<Instant>,
     next_restart_at: Instant,
+    next_pre_stale_refresh_at: Instant,
     unhealthy_until: Option<Instant>,
 }
 
@@ -133,6 +137,7 @@ impl Runtime {
             restart_attempt: 0,
             restart_times_5m: VecDeque::new(),
             next_restart_at: now,
+            next_pre_stale_refresh_at: now,
             unhealthy_until: None,
         }
     }
@@ -171,6 +176,19 @@ pub fn run_daemon(st: &Store) -> io::Result<()> {
         DEFAULT_STATUS_FLUSH_INTERVAL_SEC,
     ));
     let max_restarts_5m = env_usize("AGENTLB_MAX_RESTARTS_5M", DEFAULT_MAX_RESTARTS_5M);
+    let stale_sec = crate::config::load(&st.config_path)
+        .ok()
+        .map(|cfg| cfg.sessions.stale_sec.max(1) as u64)
+        .unwrap_or(420);
+    let pre_stale_refresh_sec = env_u64(
+        "AGENTLB_PRE_STALE_REFRESH_SEC",
+        DEFAULT_PRE_STALE_REFRESH_SEC,
+    )
+    .min(stale_sec.saturating_sub(1).max(1));
+    let pre_stale_refresh_cooldown = Duration::from_secs(env_u64(
+        "AGENTLB_PRE_STALE_REFRESH_COOLDOWN_SEC",
+        DEFAULT_PRE_STALE_REFRESH_COOLDOWN_SEC,
+    ));
 
     let mut next_probe = Instant::now();
     let mut last_flush = Instant::now() - flush_interval;
@@ -222,6 +240,25 @@ pub fn run_daemon(st: &Store) -> io::Result<()> {
                 } else {
                     rt.unhealthy_until = None;
                     sess.health = "healthy".to_string();
+                }
+            }
+
+            if should_refresh_before_stale(sess, stale_sec as i64, pre_stale_refresh_sec as i64)
+                && now >= rt.next_pre_stale_refresh_at
+            {
+                if let Some(mp) = rt.managed.as_mut() {
+                    if send_rate_limits_read(&mut mp.stdin).is_ok() {
+                        rt.next_pre_stale_refresh_at = now + pre_stale_refresh_cooldown;
+                    }
+                } else {
+                    let (ok, rl) = run_probe(st, alias, probe_lifetime);
+                    sess.last_probe_at = now_rfc3339();
+                    sess.last_probe_result = if ok { "ok" } else { "error" }.to_string();
+                    if let Some(rate_limits) = rl {
+                        apply_rate_limits(sess, &rate_limits);
+                    }
+                    rt.next_pre_stale_refresh_at = now + pre_stale_refresh_cooldown;
+                    dirty = true;
                 }
             }
 
@@ -432,13 +469,17 @@ fn send_initialize_and_read(stdin: &mut ChildStdin) -> io::Result<()> {
         }
       }
     });
+    writeln!(stdin, "{}", init)?;
+    send_rate_limits_read(stdin)
+}
+
+fn send_rate_limits_read(stdin: &mut ChildStdin) -> io::Result<()> {
     let read = json!({
       "jsonrpc": "2.0",
       "id": 2,
       "method": "account/rateLimits/read",
       "params": {}
     });
-    writeln!(stdin, "{}", init)?;
     writeln!(stdin, "{}", read)?;
     stdin.flush()
 }
@@ -559,6 +600,28 @@ fn apply_rate_limits(sess: &mut SessionStatus, rl: &Value) {
     }
     sess.usage_left_percent = mins.into_iter().min().unwrap_or(30);
     sess.last_rate_limit_update_at = now_rfc3339();
+}
+
+fn age_seconds_rfc3339(ts: &str) -> Option<i64> {
+    let dt = DateTime::parse_from_rfc3339(ts).ok()?;
+    let utc = dt.with_timezone(&Utc);
+    Some((Utc::now() - utc).num_seconds().max(0))
+}
+
+fn should_refresh_before_stale(
+    sess: &SessionStatus,
+    stale_sec: i64,
+    pre_stale_refresh_sec: i64,
+) -> bool {
+    if stale_sec <= 0 {
+        return false;
+    }
+    if sess.last_rate_limit_update_at.trim().is_empty() {
+        return true;
+    }
+    let age = age_seconds_rfc3339(&sess.last_rate_limit_update_at).unwrap_or(stale_sec + 1);
+    let threshold = (stale_sec - pre_stale_refresh_sec).max(0);
+    age >= threshold
 }
 
 fn to_window(v: Option<&Value>) -> Option<RateWindow> {
