@@ -32,10 +32,16 @@ agentlb supervisor start --background
   - Round-robin across existing aliases.
 - `agentlb list`
   - List known sessions with email (when available) and absolute session path.
+  - Email is read from each session's auth metadata; `-` means unavailable.
 - `agentlb new <alias>`
   - Create alias if missing.
   - Run login once on first creation.
   - Run command in that alias.
+- `agentlb new <email>`
+  - Resolve email to an existing session alias and run that session.
+  - Use `agentlb list` to see available alias/email mappings.
+  - If zero matches: returns a not-found error.
+  - If multiple matches: returns an ambiguity error and asks for explicit alias.
 - `agentlb new`
   - Pick best session using `~/.agentlb/status.json` (usage-aware selection).
   - If status is unusable after retry, creates a new alias (`auto1`, `auto2`, ...).
@@ -126,7 +132,7 @@ Supervisor responsibilities:
 
 ## Flags
 
-Supported on `agentlb`, `agentlb new`, `agentlb new <alias>`, `agentlb rr`, and `agentlb last`:
+Supported on `agentlb`, `agentlb new`, `agentlb new <alias-or-email>`, `agentlb rr`, and `agentlb last`:
 
 - `--cmd "<command string>"` override run command for this invocation
 - `--login-cmd "<command string>"` override login command (new alias only)
@@ -137,6 +143,7 @@ Examples:
 ```bash
 agentlb --cmd "codex --model gpt-5.1-codex-mini"
 agentlb new work -- --search
+agentlb new gngeorgiev.it@gmail.com -- --search
 agentlb new -- --help
 agentlb rr
 agentlb last -- --search
@@ -146,6 +153,28 @@ agentlb supervisor start --background
 agentlb supervisor restart
 agentlb supervisor stop
 ```
+
+## Email-Targeted Sessions
+
+You can run a session by account email instead of alias:
+
+```bash
+agentlb new <email>
+```
+
+How it works:
+
+1. `agentlb` scans existing session directories under `~/.agentlb/sessions`.
+2. It reads session auth metadata and extracts email.
+3. It matches your input email (case-insensitive) to existing sessions.
+
+Outcomes:
+
+- exactly one match: session runs
+- no match: actionable error telling you to create/select alias
+- multiple matches: actionable error listing matching aliases
+
+Use `agentlb list` first when you want to discover alias/email/path mappings.
 
 ## Config
 

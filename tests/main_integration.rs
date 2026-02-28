@@ -238,16 +238,46 @@ fn list_prints_alias_email_and_path() -> Result<(), Box<dyn Error>> {
     assert!(stdout.contains("EMAIL"));
     assert!(stdout.contains("PATH"));
     let lines: Vec<&str> = stdout.lines().collect();
-    assert!(lines
-        .iter()
-        .any(|l| l.trim_start().starts_with('a')
-            && l.contains("a@example.com")
-            && l.contains("/.agentlb/sessions/a")));
-    assert!(lines
-        .iter()
-        .any(|l| l.trim_start().starts_with('b')
-            && l.contains(" - ")
-            && l.contains("/.agentlb/sessions/b")));
+    assert!(lines.iter().any(|l| l.trim_start().starts_with('a')
+        && l.contains("a@example.com")
+        && l.contains("/.agentlb/sessions/a")));
+    assert!(lines.iter().any(|l| l.trim_start().starts_with('b')
+        && l.contains(" - ")
+        && l.contains("/.agentlb/sessions/b")));
+    Ok(())
+}
+
+#[test]
+fn new_accepts_email_target_and_resolves_to_alias() -> Result<(), Box<dyn Error>> {
+    let home = TempDir::new()?;
+    let fake = write_fake_codex(&home)?;
+    let run_log = home.path().join("run.log");
+
+    let sess = home.path().join(".agentlb/sessions/work");
+    fs::create_dir_all(&sess)?;
+
+    let payload = r#"{"email":"target@example.com"}"#;
+    let token = format!("x.{}.y", URL_SAFE_NO_PAD.encode(payload.as_bytes()));
+    fs::write(
+        sess.join("auth.json"),
+        format!(r#"{{"tokens":{{"id_token":"{}"}}}}"#, token),
+    )?;
+
+    let status = Command::new(env!("CARGO_BIN_EXE_agentlb"))
+        .env("HOME", home.path())
+        .env("AGENTLB_SUPERVISOR_DISABLED", "1")
+        .env("AGENTLB_RECORD_RUN", &run_log)
+        .args([
+            "new",
+            "target@example.com",
+            "--cmd",
+            &format!("{} run", fake.display()),
+        ])
+        .status()?;
+    assert!(status.success());
+
+    let ran = fs::read_to_string(&run_log)?;
+    assert!(ran.trim().ends_with("/.agentlb/sessions/work"));
     Ok(())
 }
 

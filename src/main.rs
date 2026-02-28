@@ -248,7 +248,9 @@ fn print_help() {
     println!("usage:");
     println!("  agentlb [--cmd <command>] [-- <args...>]");
     println!("  agentlb list");
-    println!("  agentlb new [<alias>] [--cmd <command>] [--login-cmd <command>] [-- <args...>]");
+    println!(
+        "  agentlb new [<alias-or-email>] [--cmd <command>] [--login-cmd <command>] [-- <args...>]"
+    );
     println!("  agentlb rr [--cmd <command>] [-- <args...>]");
     println!("  agentlb last [--cmd <command>] [-- <args...>]");
     println!("  agentlb supervisor");
@@ -359,6 +361,25 @@ fn decode_jwt_email(token: &str) -> Option<String> {
 }
 
 fn run_new_alias(
+    target: &str,
+    run_cmd: &str,
+    login_cmd: &str,
+    passthrough: &[String],
+    cfg: &config::Config,
+    st: &state::Store,
+) -> i32 {
+    let alias = match resolve_alias_target(target, st) {
+        Ok(v) => v,
+        Err(err) => {
+            eprintln!("{}", err);
+            return EXIT_USAGE;
+        }
+    };
+
+    run_new_alias_resolved(&alias, run_cmd, login_cmd, passthrough, cfg, st)
+}
+
+fn run_new_alias_resolved(
     alias: &str,
     run_cmd: &str,
     login_cmd: &str,
@@ -425,6 +446,46 @@ fn run_new_alias(
             eprintln!("{}", err);
             EXIT_GENERIC
         }
+    }
+}
+
+fn resolve_alias_target(target: &str, st: &state::Store) -> io::Result<String> {
+    if !target.contains('@') {
+        return Ok(target.to_string());
+    }
+
+    let aliases = st.list_aliases()?;
+    let mut matches: Vec<String> = aliases
+        .iter()
+        .filter(|a| !a.starts_with('.'))
+        .filter(|alias| {
+            let path = st.session_dir(alias);
+            read_session_email(&path)
+                .map(|e| e.eq_ignore_ascii_case(target))
+                .unwrap_or(false)
+        })
+        .cloned()
+        .collect();
+
+    matches.sort();
+    matches.dedup();
+    match matches.len() {
+        1 => Ok(matches[0].clone()),
+        0 => Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "no session found for email {:?}; create one with: agentlb new <alias>",
+                target
+            ),
+        )),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "multiple sessions match email {:?}: {}; use alias explicitly",
+                target,
+                matches.join(", ")
+            ),
+        )),
     }
 }
 
