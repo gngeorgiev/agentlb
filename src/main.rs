@@ -373,7 +373,7 @@ fn print_help() {
     println!("  agentlb config init");
     println!();
     println!("commands:");
-    println!("  (default)            Run using round-robin over managed sessions");
+    println!("  (default)            Same as `new` (auto-pick when no target is provided)");
     println!("  new [target]         Use named/email session or auto-pick from status scoring");
     println!("  rr                   Force round-robin pick");
     println!("  last                 Reuse last selected session");
