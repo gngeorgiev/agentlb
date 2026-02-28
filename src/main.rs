@@ -845,11 +845,11 @@ fn render_unified_status_table(
         if let Some(row) = score_by_alias.get(&alias) {
             let prim = row
                 .primary_left
-                .map(|v| v.to_string())
+                .map(|v| format!("{}%", v))
                 .unwrap_or_else(|| "-".to_string());
             let week = row
                 .secondary_left
-                .map(|v| v.to_string())
+                .map(|v| format!("{}%", v))
                 .unwrap_or_else(|| "-".to_string());
             let score = row
                 .score
@@ -863,7 +863,7 @@ fn render_unified_status_table(
                 Cell::new(path),
                 Cell::new(prim),
                 Cell::new(week),
-                Cell::new(row.usage_left),
+                Cell::new(format!("{}%", row.usage_left)),
                 Cell::new(refresh),
                 Cell::new(score),
                 Cell::new(row.restart_count),
